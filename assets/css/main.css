@@ -2367,7 +2367,6 @@ input, select, textarea {
 		border: 0;
 		display: inline-block;
 		position: relative;
-		text-align: center;
 	}
 
 		.image img {
@@ -2414,6 +2413,63 @@ input, select, textarea {
 			.image.main img {
 				width: 100%;
 			}
+			/* Image with text */
+
+				.image-with-text {
+					border-radius: 8px;
+					border: 0;
+					display: inline-block;
+					position: relative;
+				}
+				.image-with-text {
+					text-align: justify;
+					width:inherit;
+				}
+
+					.image-with-text img {
+						border-radius: 8px;
+						display: block;
+					}
+
+					.image-with-text.left, .image-with-text.right {
+						max-width: 40%;
+					}
+
+						.image-with-text.left img, .image-with-text.right img {
+							width: 100%;
+						}
+
+					.image-with-text.left {
+						float: left;
+						margin: 0 1.5em 1em 0;
+						top: 0.25em;
+					}
+
+					.image-with-text.right {
+						float: right;
+						margin: 0 0 1em 1.5em;
+						top: 0.25em;
+					}
+
+					.image-with-text.fit {
+						display: block;
+						margin: 0 0 2em 0;
+						width: 100%;
+					}
+
+						.image-with-text.fit img {
+							width: 100%;
+						}
+
+					.image-with-text.main {
+						display: block;
+						margin: 0 0 3em 0;
+						width: 100%;
+					}
+
+						.image-with-text.main img {
+							width: 100%;
+						}
 
 /* Description */
 .description {
