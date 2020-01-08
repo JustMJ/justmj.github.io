@@ -3055,10 +3055,10 @@ input, select, textarea {
 
 		.spotlight .image {
 			display: inline-block;
-			margin-left: 4em;
-			padding: 0.65em;
+			margin-left: 0em;
+			padding: 0em;
 			border-radius: 100%;
-			border: solid 1px;
+			border: solid 10px;
 		}
 
 			.spotlight .image img {
@@ -3839,7 +3839,7 @@ input, select, textarea {
 			}
 
 		}
-		
+
 		/* Row */
 
 			.row {
