@@ -2704,7 +2704,8 @@ input, select, textarea {
 				content: '';
 				width: 3.25em;
 				height: 2px;
-				margin: 0.7em 0 1em 0;
+				margin-left:auto;
+				margin-right:auto;
 				border-radius: 2px;
 			}
 
