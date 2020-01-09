@@ -3838,3 +3838,21 @@ input, select, textarea {
 			}
 
 		}
+
+/* reference */
+
+reference{
+	margin: 0 0 2em 0;
+}
+
+	.reference {
+		-moz-columns: 20em 2;
+		-webkit-columns: 20em 2;
+		-ms-columns: 20em 2;
+		columns: 20em 2;
+		-moz-column-gap: 2em;
+		-webkit-column-gap: 2em;
+		-ms-column-gap: 2em;
+		column-gap: 2em;
+		text-align: left;
+	}
