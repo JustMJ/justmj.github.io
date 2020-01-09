@@ -3845,7 +3845,7 @@ reference{
 	margin: 0 0 2em 0;
 }
 
-	.reference {
+	reference {
 		-moz-columns: 20em 2;
 		-webkit-columns: 20em 2;
 		-ms-columns: 20em 2;
