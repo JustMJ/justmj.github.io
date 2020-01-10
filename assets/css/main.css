@@ -2704,7 +2704,7 @@ input, select, textarea {
 				display: block;
 				content: '';
 				width: 3.25em;
-				height: 2px;
+				height: 3px;
 				margin: 0.7em 0 1em 0;
 				border-radius: 2px;
 			}
@@ -3844,6 +3844,7 @@ input, select, textarea {
 /* reference */
 
 	.hangingindent {
+		text-align: left;
 		padding-left: 22px;
-		padding-indent: -22px;
+		padding-indent: -50px;
 	}
