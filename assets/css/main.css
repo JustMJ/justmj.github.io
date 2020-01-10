@@ -3846,5 +3846,5 @@ input, select, textarea {
 	.hangingindent {
 		text-align: left;
 		padding-left: 22px;
-		padding-indent: -50px;
+		text-indent: -50px;
 	}
