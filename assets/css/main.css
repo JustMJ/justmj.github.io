@@ -3848,4 +3848,6 @@ input, select, textarea {
 		font-size: 12pt;
 		padding-left: 22px;
 		text-indent: -50px;
-	}
+		margin: 0 0 2em 0;
+			}
+		
