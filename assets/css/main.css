@@ -3704,7 +3704,7 @@ input, select, textarea {
 		@media screen and (max-width: 480px) {
 
 			#main > .main {
-				padding: 3em 1.5em 1em 1.5em ;
+				padding: 2em 2em 2em 2em ;
 			}
 
 				#main > .main > .image.main:first-child {
@@ -3845,9 +3845,7 @@ input, select, textarea {
 
 	.hangingindent {
 		text-align: left;
-		font-size: 12pt;
+		font-size: 100%;
 		padding-left: 22px;
 		text-indent: -50px;
-		margin: 0 0 2em 0;
 			}
-		
