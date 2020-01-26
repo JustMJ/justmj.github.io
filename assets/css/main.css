@@ -4111,7 +4111,7 @@ input, select, textarea {
 						}
 
 						#sidebar nav a.active {
-							color: #ffffff;
+							color: black;
 						}
 
 							#sidebar nav a.active:after {
