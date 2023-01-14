@@ -1,4 +1,3 @@
 [submodule "R Tutorials"] 
 	path = 'R Tutorials'
-	url = ../'R Tutorials'
-	branch = main
+	url = git://github.com/JustMJ/justmj.github.io/'R Tutorials'
