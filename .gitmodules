@@ -1,3 +1,3 @@
-[submodule "JustMJ"] 
-	path = 'JustMJ/R Tutorials'
-	url = git@github.com:JustMJ/R-Tutorials.git
+[submodule "justmj.github.io/R Tutorials"] 
+	path = "justmj.github.io/R Tutorials"
+	url = git@github.com:justmj.github.io/R-Tutorials.git
