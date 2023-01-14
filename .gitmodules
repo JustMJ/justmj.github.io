@@ -1,3 +1,4 @@
-[submodule "justmj.github.io/R Tutorials"] 
-	path = "justmj.github.io/R Tutorials"
-	url = git@github.com:justmj.github.io/R-Tutorials.git
+[submodule "R Tutorials"] 
+	path = 'R Tutorials'
+	url = ../'R Tutorials'
+	branch = main
