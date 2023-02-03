@@ -1,0 +1,3 @@
+[submodule "R Tutorials"]
+	path = /'R Tutorials'
+	url = https://github.com/JustMJ/R-Tutorials.git
