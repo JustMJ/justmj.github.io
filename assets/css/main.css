@@ -2556,12 +2556,12 @@ input, select, textarea {
 		display: flex;
 		cursor: default;
 		list-style: none;
-		margin-left: 22em;
-		padding-left: 0;
+		justify-content: center;
+		align-items:center;
 	}
 
 		ul.actions li {
-			padding: 0 0 0 1em;
+			padding: 0 0 0 0em;
 			vertical-align: middle;
 		}
 
