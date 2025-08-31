@@ -332,7 +332,7 @@ input, select, textarea {
 		border-bottom-color: rgba(255, 255, 255, 0.35);
 	}
 
-.photo img {
+#header .photo img {
   width: 180px;     /* adjust */
   height: auto;     /* keep aspect ratio */
   border-radius: 50%;  /* optional for circular crop */
