@@ -332,6 +332,11 @@ input, select, textarea {
 		border-bottom-color: rgba(255, 255, 255, 0.35);
 	}
 
+	#header .photo img {
+	  width: 180px;
+	  height: auto;
+	}
+
 /* Row */
 
 	.row {
