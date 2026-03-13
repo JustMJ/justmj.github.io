@@ -14,6 +14,36 @@
 		<!--[if lte IE 8]><link rel="stylesheet" href="assets/css/ie8.css" /><![endif]-->
 	</head>
 	<style>
+	#topnav {
+		position: fixed;
+		top: 0;
+		left: 0;
+		width: 100%;
+		background: #2e3141;
+		z-index: 1000;
+		padding: 0 2em;
+		box-sizing: border-box;
+	}
+	#topnav ul {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: flex;
+		gap: 0;
+	}
+	#topnav ul li a {
+		display: block;
+		color: #fff;
+		text-decoration: none;
+		padding: 0.75em 1.25em;
+		font-size: 0.85em;
+		letter-spacing: 0.1em;
+		text-transform: uppercase;
+		transition: background 0.2s;
+	}
+	#topnav ul li a:hover {
+		background: rgba(255,255,255,0.1);
+	}
 	.iframe-container {
 		position: relative;
 		margin: 5px;
@@ -21,7 +51,7 @@
 		overflow: hidden;
 	}
 	.iframe-container-for-wxh-500x350 {
-		padding: 25px 25px 70% 25px; /* padding-bottom = h/w as a % */
+		padding: 25px 25px 70% 25px;
 	}
 	.iframe-container iframe {
 		position: absolute;
@@ -32,42 +62,22 @@
 		width: 100%;
 		height: 100%;
 		border: 1px inset #7a8b8b;
-		/* put following styles (necessary for overflow and
-		scrolling handling) in div container around iframe
-		because not stable in CSS
-		-webkit-overflow-scrolling: touch;
-		overflow: auto; */
 }
 </style>
 </head>
-	<body class>>
-		<!-- Header -->
-			<header id="header">
-			<!-- Nav -->
-		<section id="sidebar">
-			<div class="inner">
-				<nav>
-				<ul>
-					<li>
-					<a href="index.html" class="scrolly active">Home</a>
-				</li>
-				<li>
-				<a href="R.html" class="scrolly active">R Crash Course</a>
-			</li>
-				<li>
-				<a href="ICCs.html" class=" scrolly">ICCs</a>
-			</li>
-			<li>
-			<a href= class="scrolly">Multilevel Modeling</a>
-		</li>
-		<li>
-		<a href= class="scrolly">Time Series Analysis</a>
-	</li>
-</ul>
-</nav>
-</header>
+	<body>
+		<!-- Top Nav -->
+		<nav id="topnav">
+			<ul>
+				<li><a href="index.html">Home</a></li>
+				<li><a href="R.html">R Crash Course</a></li>
+				<li><a href="ICCs.html">ICCs</a></li>
+				<li><a href="#">Multilevel Modeling</a></li>
+				<li><a href="#">Time Series Analysis</a></li>
+			</ul>
+		</nav>
 		<!-- Wrapper -->
-			<div id="wrapper">
+			<div id="wrapper" style="padding-top: 2.5em;">
 				<!-- Main -->
 					<section id="main" class="wrapper">
 						<div class="inner">
