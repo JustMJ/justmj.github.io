@@ -490,11 +490,10 @@ $$P(\mathbf{Y}_t = \mathbf{y}_t \mid \mathbf{Y}_{t-1} = \mathbf{y}_{t-1}) = \fra
 
 The sufficient statistics $\mathbf{g}$ can now depend on both the current network *and* the prior network, allowing you to model stability (past ties predict current ties) and network evolution.
 
-### 10.3 Fitting TERGMs with `btergm`
+### 10.3 Simulating Two Waves
 
 ```{r}
 #| label: simulate-waves
-library(btergm)
 set.seed(99)
 
 advice_t1 <- advice_net   # Wave 1
@@ -511,33 +510,65 @@ advice_t2 %v% "tenure"      <- tenure
 advice_t2 %v% "is_manager"  <- is_manager
 
 net_list <- list(advice_t1, advice_t2)
+
+cat("Wave 1 edges:", network.edgecount(advice_t1), "\n")
+cat("Wave 2 edges:", network.edgecount(advice_t2), "\n")
 ```
+
+### 10.4 Fitting TERGMs with `tergm`
+
+We use the `tergm` package (part of statnet) with Conditional MLE (CMLE). Network *stability* is captured by including the previous network as a dyadic covariate via `edgecov()` — ties that existed at $t-1$ are included as a predictor of ties at $t$.
 
 ```{r}
 #| label: fit-tergm
-set.seed(42)
-tergm_fit <- btergm(
+library(tergm)
+
+# Create lagged network covariate (previous wave as predictor of current wave)
+# For CMLE with 2 waves this is the Wave 1 network predicting Wave 2
+tergm_fit <- tergm(
+  net_list ~ edges
+             + mutual
+             + gwesp(0.5, fixed = TRUE)
+             + nodematch("department")
+             + nodeicov("tenure"),
+  estimate = "CMLE",
+  times    = c(1, 2),
+  control  = control.tergm(
+    MCMC.samplesize = 4000,
+    seed            = 42
+  )
+)
+summary(tergm_fit)
+```
+
+### 10.5 Network Stability
+
+In the CMLE framework, *stability* — the tendency for ties to persist — is not modelled as an explicit term but is instead encoded in the model through the conditional likelihood: we are modelling $P(\mathbf{Y}_t \mid \mathbf{Y}_{t-1})$, so the previous network state is automatically conditioned on. To make stability an *explicit* coefficient, add the lagged network as an edgecov:
+
+```{r}
+#| label: fit-tergm-stability
+#| eval: false
+# Add explicit stability term
+tergm_stab <- tergm(
   net_list ~ edges
              + mutual
              + gwesp(0.5, fixed = TRUE)
              + nodematch("department")
              + nodeicov("tenure")
-             + memory(type = "stability"),
-  R = 200
+             + edgecov(net_list[[1]]),   # lag-1 stability term
+  estimate = "CMLE",
+  times    = c(1, 2),
+  control  = control.tergm(MCMC.samplesize = 4000, seed = 42)
 )
-summary(tergm_fit)
+summary(tergm_stab)
 ```
 
-### 10.4 The `memory()` Term
+A positive `edgecov` coefficient means ties that existed at $t-1$ are more likely to still exist at $t$ — the network is stable. For example, $\exp(2.5) \approx 12\times$ more likely to persist.
 
-The `memory(type = "stability")` term captures the tendency for ties to *persist* from one wave to the next. A positive coefficient means past ties strongly predict current ties. For example, a coefficient of 2.5 means ties that existed last period are $\exp(2.5) \approx 12\times$ more likely to still exist.
+::: callout-note
+## `btergm` as an Alternative
 
-Other types: `"innovation"` (tendency to form ties to new alters) and `"loss"` (tie dissolution specifically).
-
-::: callout-warning
-## Bootstrap vs. MCMC Inference
-
-`btergm` uses bootstrapped pseudo-likelihood, which is computationally efficient but is an approximation. For smaller networks where full likelihood is tractable, consider the `tergm` package (part of statnet) which uses MCMC-MLE.
+The `btergm` package offers a bootstrap pseudo-likelihood alternative. Its `memory(type = "stability")` term is a convenient shorthand for the lagged edgecov. `btergm` is particularly useful for larger networks or many time points where CMLE becomes slow.
 :::
 
 ---
