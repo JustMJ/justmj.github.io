@@ -533,10 +533,7 @@ tergm_fit <- tergm(
              + nodematch("department")
              + nodeicov("tenure"),
   estimate = "CMLE",
-  times    = c(1, 2),
-  control  = control.tergm(
-    CMLE.ergm = control.ergm(MCMC.samplesize = 4000)
-  )
+  times    = c(1, 2)
 )
 summary(tergm_fit)
 ```
@@ -558,7 +555,6 @@ tergm_stab <- tergm(
              + edgecov(net_list[[1]]),   # lag-1 stability term
   estimate = "CMLE",
   times    = c(1, 2),
-  control  = control.tergm(CMLE.ergm = control.ergm(MCMC.samplesize = 4000))
 )
 summary(tergm_stab)
 ```
@@ -602,17 +598,14 @@ Each of $P^+$ and $P^-$ is an ERGM in its own right, with separate parameters.
 #| label: fit-stergm
 library(tergm)
 
+set.seed(42)
 stergm_fit <- stergm(
   net_list,
-  formation  = ~ edges + mutual + gwesp(0.5, fixed = TRUE)
-                 + nodematch("department") + nodeicov("tenure"),
+  formation   = ~ edges + mutual + gwesp(0.5, fixed = TRUE)
+                  + nodematch("department") + nodeicov("tenure"),
   dissolution = ~ edges + nodematch("department") + nodeicov("tenure"),
-  estimate   = "CMLE",
-  times      = c(1, 2),
-  control    = control.stergm(
-    CMLE.ergm.form = control.ergm(MCMC.samplesize = 4000, seed = 42),
-    CMLE.ergm.diss = control.ergm(MCMC.samplesize = 4000, seed = 42)
-  )
+  estimate    = "CMLE",
+  times       = c(1, 2)
 )
 summary(stergm_fit)
 ```
