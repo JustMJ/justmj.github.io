@@ -628,15 +628,19 @@ In `stergm()`, a **positive** dissolution coefficient means the tie is more like
 
 ### 11.5 GoF for STERGMs
 
+GoF for STERGM objects follows the same logic as for cross-sectional ERGMs: simulate networks from the fitted model and compare structural statistics to the observed network. The API for `gof()` on `stergm` objects varies across package versions; the call below shows the intended usage — run it interactively after confirming your version supports it.
+
 ```{r}
 #| label: gof-stergm
-#| fig-cap: "GoF for the STERGM. Formation and dissolution components are assessed separately."
-#| fig-height: 8
-gof_stergm <- gof(stergm_fit, control = control.gof.stergm(nsim = 100, seed = 42))
+#| eval: false
+# GoF for STERGM — run interactively; API varies by tergm version
+gof_stergm <- gof(stergm_fit)
 par(mfrow = c(2, 3))
 plot(gof_stergm)
 par(mfrow = c(1, 1))
 ```
+
+Assess the formation and dissolution components separately: the formation GoF should reproduce the degree distribution of *newly formed* ties, and the dissolution GoF should reproduce the degree distribution of *persisting* ties. Both should pass the same visual checks as the cross-sectional GoF plots above (observed line through the simulated boxes).
 
 ---
 
