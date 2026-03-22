@@ -372,7 +372,8 @@ AIC(m0, m1, m2)
 BIC(m0, m1, m2)
 
 # Likelihood ratio test (only valid for nested models)
-anova(m1, m2, test = "LRT")
+# eval.loglik = TRUE required in ergm >= 4.x for MCMC-fitted models
+anova(m1, m2, eval.loglik = TRUE)
 ```
 
 ---
