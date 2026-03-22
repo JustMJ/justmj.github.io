@@ -525,6 +525,7 @@ library(tergm)
 
 # Create lagged network covariate (previous wave as predictor of current wave)
 # For CMLE with 2 waves this is the Wave 1 network predicting Wave 2
+set.seed(42)
 tergm_fit <- tergm(
   net_list ~ edges
              + mutual
@@ -534,8 +535,7 @@ tergm_fit <- tergm(
   estimate = "CMLE",
   times    = c(1, 2),
   control  = control.tergm(
-    MCMC.samplesize = 4000,
-    seed            = 42
+    CMLE.ergm = control.ergm(MCMC.samplesize = 4000)
   )
 )
 summary(tergm_fit)
@@ -558,7 +558,7 @@ tergm_stab <- tergm(
              + edgecov(net_list[[1]]),   # lag-1 stability term
   estimate = "CMLE",
   times    = c(1, 2),
-  control  = control.tergm(MCMC.samplesize = 4000, seed = 42)
+  control  = control.tergm(CMLE.ergm = control.ergm(MCMC.samplesize = 4000))
 )
 summary(tergm_stab)
 ```
@@ -610,8 +610,8 @@ stergm_fit <- stergm(
   estimate   = "CMLE",
   times      = c(1, 2),
   control    = control.stergm(
-    MCMC.samplesize = 4000,
-    seed            = 42
+    CMLE.ergm.form = control.ergm(MCMC.samplesize = 4000, seed = 42),
+    CMLE.ergm.diss = control.ergm(MCMC.samplesize = 4000, seed = 42)
   )
 )
 summary(stergm_fit)
