@@ -515,6 +515,7 @@ net_list <- list(advice_t1, advice_t2)
 
 ```{r}
 #| label: fit-tergm
+set.seed(42)
 tergm_fit <- btergm(
   net_list ~ edges
              + mutual
@@ -522,8 +523,7 @@ tergm_fit <- btergm(
              + nodematch("department")
              + nodeicov("tenure")
              + memory(type = "stability"),
-  R    = 200,
-  seed = 42
+  R = 200
 )
 summary(tergm_fit)
 ```
