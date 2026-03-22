@@ -26472,7 +26472,22 @@ window.Quarto = {
 
 </head>
 
-<body class="quarto-light">
+<body class="quarto-light" style="padding-top: 3.2em;">
+
+<style>
+#site-topnav { position:fixed; top:0; left:0; width:100%; background:#2e3141; z-index:9999; padding:0 2em; box-sizing:border-box; }
+#site-topnav ul { list-style:none; margin:0; padding:0; display:flex; }
+#site-topnav ul li a { display:block; color:#fff; text-decoration:none; padding:0.75em 1.25em; font-size:0.85em; letter-spacing:0.1em; text-transform:uppercase; transition:background 0.2s; }
+#site-topnav ul li a:hover { background:rgba(255,255,255,0.1); }
+</style>
+<nav id="site-topnav">
+  <ul>
+    <li><a href="../../index.html">Home</a></li>
+    <li><a href="../../presentations.html">Presentations</a></li>
+    <li><a href="../../publications.html">Publications</a></li>
+    <li><a href="../../code.html">Code and Stuff</a></li>
+  </ul>
+</nav>
 
 <div id="quarto-content" class="page-columns page-rows-contents page-layout-article">
 <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
