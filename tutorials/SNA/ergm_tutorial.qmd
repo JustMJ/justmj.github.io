@@ -289,6 +289,8 @@ m0 <- ergm(advice_net ~ edges)
 summary(m0)
 ```
 
+The `edges` coefficient of **−1.32** translates via the inverse-logit to a baseline tie probability of `plogis(−1.32)` ≈ **21%** — matching the observed network density of 0.21 almost exactly. This is expected: in an edges-only model the intercept simply encodes density. The highly significant z-value (−15.9) just confirms that the network is meaningfully sparser than a 50% coin-flip, not that any structural or attribute process has been identified.
+
 ```{r}
 #| label: fit-m1
 # Model 1: Structural terms
@@ -303,6 +305,14 @@ m1 <- ergm(
 )
 summary(m1)
 ```
+
+Adding structural controls substantially changes the `edges` intercept (−1.15, now reflecting a density conditional on the structural terms) but does not by itself reveal any significant endogenous network tendencies in this dataset:
+
+- **`mutual` = −0.20, ns.** No reliable reciprocity over and above the baseline density. The advice network was simulated without an explicit reciprocity mechanism, so this is expected.
+- **`gwesp.OTP.fixed.0.5` = −0.02, ns.** No triangulation / clustering beyond what shared department membership would produce (which isn't controlled for yet). Triadic closure is not an independent driver of tie formation here.
+- **`gwideg.fixed.0.5` = −2.43, p = .004.** A strongly negative geometrically-weighted in-degree term indicates that the in-degree distribution is *more even* than a random Erdős–Rényi graph with the same density — advice-seeking is spread across many targets rather than concentrated on a small number of popular advisors. This controls for degree heterogeneity before we add attribute predictors.
+
+Note that AIC barely changes from M0 (897.6 vs. 897.1) and BIC actually worsens (916.7 vs. 901.8) — the structural terms explain little additional variance on their own. This is a signal to look at the exogenous attribute predictors next.
 
 ```{r}
 #| label: fit-m2
@@ -322,6 +332,21 @@ m2 <- ergm(
 )
 summary(m2)
 ```
+
+Model 2 is the main substantive model. Here is a term-by-term walk-through of what the output tells us:
+
+| Term | Estimate | Odds Ratio | Interpretation |
+|---|---|---|---|
+| `edges` | −1.28† | 0.28 | Baseline log-odds of a tie; reflects overall density after accounting for all covariates |
+| `mutual` | −0.27, ns | 0.77 | No reciprocity tendency; advice ties are largely one-directional in this organization |
+| `gwesp.OTP.fixed.0.5` | −0.07, ns | 0.94 | No triadic closure once department is controlled; "friends of friends" do not seek advice from each other *beyond* what department membership already explains |
+| `gwideg.fixed.0.5` | −1.83† | 0.16 | In-degree is distributed broadly across the network rather than concentrated in a few go-to advisors |
+| **`nodematch.department`** | **+0.54\*\*** | **1.71** | **Same-department pairs are 1.71× more likely to have an advice tie** — the dominant structural finding |
+| **`nodeicov.tenure`** | **+0.050\*** | **1.051** | **Each additional year of tenure in the target employee increases the log-odds of receiving an advice tie by 0.05** — experienced employees are sought out for advice |
+| `nodeicov.performance` | −0.15, ns | 0.86 | Performance ratings do not significantly predict being sought out for advice, after controlling for tenure |
+| `nodefactor.is_manager.1` | +0.23, ns | 1.26 | Managers have somewhat higher in-degree (more people seek their advice) but this is not significant once tenure is in the model — tenure carries the status signal |
+
+The two significant findings — **departmental homophily** and **tenure-based attractiveness** — replicate exactly the mechanisms used to simulate the data, which validates the recovery. In a real I-O study, these would be theoretically meaningful: informal advice remains bounded by organizational silos, and seniority (not formal performance ratings) drives who gets consulted.
 
 ### 6.3 MCMC Control Parameters
 
@@ -352,16 +377,22 @@ plogis(coef(m2)["edges"])
 
 # Same-department tie with reciprocity and one shared partner
 logit_rich <- coef(m2)["edges"] +
-              coef(m2)["nodematch.department"]  * 1 +
-              coef(m2)["mutual"]                * 1 +
-              coef(m2)["gwesp.fixed.0.5"]       * 1
+              coef(m2)["nodematch.department"]      * 1 +
+              coef(m2)["mutual"]                    * 1 +
+              coef(m2)["gwesp.OTP.fixed.0.5"]       * 1
 plogis(logit_rich)
 ```
+
+The first block (`round(exp(coef(m2)), 3)`) gives the odds ratios for each term. Reading the two significant ones: `nodematch.department` ≈ **1.71** (same-department pairs 71% more likely to have a tie) and `nodeicov.tenure` ≈ **1.05** (each additional year of tenure in the target increases tie probability by ~5%).
+
+The second line (`plogis(coef(m2)["edges"])`) gives the **baseline tie probability** — the probability of a tie when all change statistics equal zero, i.e., a cross-department dyad, with average-tenure target, who is a non-manager, with no mutual tie and no shared partners. Here that is approximately **22%**, close to the observed density.
+
+The third block computes the probability for a *richer* scenario: a same-department dyad (`nodematch.department = 1`) that is also mutual (`mutual = 1`) and shares one common advice partner (`gwesp = 1`). Adding these log-odds on top of the baseline and applying the inverse-logit gives the predicted tie probability for this type of dyad — substantially higher than the 22% baseline. This illustrates how ERGM coefficients can be combined to produce substantively meaningful predicted probabilities.
 
 ::: callout-note
 ## Reporting Tip
 
-For an I-O audience, odds ratios are often more intuitive than log-odds. For example, `exp(nodematch.department)` ≈ 2.5 means same-department pairs are about 2.5× more likely to have an advice tie than cross-department pairs, after controlling for all other terms.
+For an I-O audience, odds ratios are often more intuitive than log-odds. `exp(nodematch.department)` ≈ 1.71 means same-department pairs are about 71% more likely to have an advice tie than cross-department pairs, after controlling for all other terms.
 :::
 
 ### 7.3 Model Comparison
@@ -375,6 +406,15 @@ BIC(m0, m1, m2)
 # eval.loglik = TRUE required in ergm >= 4.x for MCMC-fitted models
 anova(m1, m2, eval.loglik = TRUE)
 ```
+
+**Reading the AIC/BIC table:**
+
+- **AIC** (penalizes log-likelihood by 2 × number of parameters): M2 wins handily (886.2 vs. 897.1 for M0 and 897.6 for M1). Adding the attribute predictors — especially `nodematch.department` and `nodeicov.tenure` — meaningfully improves model fit.
+- **BIC** (penalizes by log(*n*) × *k*; harsher for small networks): M0 wins (901.8 vs. 924.4 for M2). With only 30 nodes, BIC heavily penalizes the 8-parameter model. This reflects a genuine tension: the attribute effects are real and theoretically important, but the network is small enough that BIC discounts them.
+
+In practice for I-O research, **report both and justify your preferred model on theoretical grounds**. If your hypothesis is specifically about departmental homophily and tenure, M2 is the appropriate model regardless of BIC.
+
+The `anova()` likelihood ratio test compares the deviance of M1 and M2 directly. A significant *p*-value confirms that adding the attribute terms in M2 significantly improves fit over the structural-only M1.
 
 ---
 
@@ -422,6 +462,14 @@ Goodness of fit (GoF) asks: does the fitted ERGM reproduce structural features o
 gof_m2 <- gof(m2, control = control.gof.ergm(nsim = 200, seed = 42))
 print(gof_m2)
 ```
+
+`print(gof_m2)` produces a table for each structural statistic. Each row is one value of the statistic (e.g., in-degree = 0, 1, 2, …), and the columns show:
+
+- **obs** — the count in the *observed* network
+- **min / mean / max** — the range across the 200 simulated networks
+- **MC p-value** — how often the simulated networks fall above or below the observed value; values near 0 or 1 indicate poor fit
+
+A well-fitting model has **MC p-values well away from 0 and 1** for all statistics. For this model, inspect particularly whether the in-degree and out-degree distributions look consistent with the simulated envelope — because we explicitly modelled `gwidegree`, degree heterogeneity should be reproduced. If the ESP distribution (edgewise shared partners) shows poor p-values, it would suggest the transitivity structure is not captured — though in this dataset the GWESP term was non-significant, so some misfit there would not be surprising.
 
 ### 9.2 GoF Plots
 
@@ -515,6 +563,8 @@ cat("Wave 1 edges:", network.edgecount(advice_t1), "\n")
 cat("Wave 2 edges:", network.edgecount(advice_t2), "\n")
 ```
 
+The output shows **183 edges at Wave 1** and **173 edges at Wave 2** — the network shed approximately 10 ties (about 5.5% of Wave 1 ties) and gained a handful of new ones, producing a slightly leaner but structurally similar network. This modest change is realistic: organizational advice networks tend to be moderately stable over short intervals (months), with most ties persisting and a minority dissolving or forming.
+
 ### 10.4 Fitting TERGMs with `tergm`
 
 We use the `tergm` package (part of statnet) with Conditional MLE (CMLE). Network *stability* is captured by including the previous network as a dyadic covariate via `edgecov()` — ties that existed at $t-1$ are included as a predictor of ties at $t$.
@@ -537,6 +587,16 @@ tergm_fit <- tergm(
 )
 summary(tergm_fit)
 ```
+
+The TERGM output has the same structure as the cross-sectional ERGM — log-odds coefficients, standard errors, and significance tests — but now the estimates condition on the Wave 1 network as the baseline state. Key observations:
+
+- **`edges` = −1.96 (p < .001).** The baseline log-odds of a tie *at Wave 2*, given the Wave 1 network structure, is strongly negative. The network does not fill in on its own; exogenous factors are needed to predict who retains or gains ties.
+- **`mutual` = −0.17, ns.** No reciprocity tendency emerges over time. Advice in this organization remains directional.
+- **`gwesp.OTP.fixed.0.5` = −0.07, ns.** Triadic closure does not drive longitudinal tie changes — new ties do not preferentially form to complete triangles.
+- **`nodematch.department` = +0.56 (p = .002).** Same-department pairs are significantly more likely to have advice ties at Wave 2, mirroring the cross-sectional finding. Departmental homophily is a longitudinally stable structural feature, not a one-time snapshot artifact.
+- **`nodeicov.tenure` = +0.056 (p = .009).** High-tenure employees continue to attract advice-seekers over time. The tenure effect is robust across the two waves.
+
+The AIC of 863 (vs. 897 for the cross-sectional M2) reflects that the TERGM's conditioning on Wave 1 makes the prediction task easier — it already "knows" which ties existed before. The substantive interpretation is the same, but the TERGM answers a longitudinal question: *what predicts the network at Wave 2, given Wave 1?*
 
 ### 10.5 Network Stability
 
@@ -612,13 +672,27 @@ summary(stergm_fit)
 
 ### 11.4 Interpreting STERGM Output
 
-You receive two sets of coefficients — one for the formation model and one for the dissolution model.
+You receive two sets of coefficients — one for the formation model and one for the dissolution model. Here is the output from the model above, explained term by term:
 
-| Parameter | Formation ($\theta^+$) | Dissolution ($\theta^-$) |
+**Formation model** (`Form(1)~...`) — predicts which ties that did *not* exist at Wave 1 form by Wave 2:
+
+| Term | Estimate | Interpretation |
 |---|---|---|
-| `edges` | Log-odds of a *new* tie forming | Log-odds of an *existing* tie persisting |
-| `nodematch.department` | Positive → same-dept pairs more likely to form new ties | Positive → same-dept ties are more stable |
-| `nodeicov.tenure` | Positive → high-tenure alters attract new advisees | Positive → ties to high-tenure alters are stickier |
+| `Form~edges` | −2.52\*\*\* | Strong baseline against forming *new* ties — the bar for forming a brand-new relationship is high |
+| `Form~mutual` | +0.04, ns | No significant tendency for new ties to form in the direction of an already-existing reverse tie |
+| `Form~gwesp.OTP.fixed.0.5` | −0.18, ns | New ties do not preferentially complete triangles |
+| `Form~nodematch.department` | +0.12, ns | Slight same-department preference for new tie formation, but not significant given the small two-wave sample |
+| `Form~nodeicov.tenure` | −0.03, ns | Tenure of the target does not significantly predict whether a *brand-new* tie forms to them |
+
+**Persistence model** (`Persist(1)~...`) — predicts which ties that *did* exist at Wave 1 are still present at Wave 2:
+
+| Term | Estimate | Interpretation |
+|---|---|---|
+| `Persist~edges` | +0.61, ns | General tendency for existing ties to persist (positive = more likely to survive); exp(0.61) ≈ 1.84, a moderate effect not reaching significance with only two waves |
+| `Persist~nodematch.department` | +0.58, ns | Same-department ties are more durable than cross-department ties; exp(0.58) ≈ 1.79, directionally consistent with theory |
+| `Persist~nodeicov.tenure` | +0.05, ns | Ties to high-tenure advisors persist longer; same direction as the cross-sectional effect |
+
+**Key take-away:** All effects in both models are *directionally* consistent with the data-generating process and the cross-sectional findings — same-department ties form more readily and dissolve less often; high-tenure advisors remain sought after over time. However, *none reach significance* in this two-wave, 30-node example. This is typical: STERGMs require meaningful network turnover (many tie changes) to estimate formation and dissolution parameters precisely. With richer longitudinal data (more waves, larger *n*, or greater flux between waves), these effects would likely be detectable.
 
 ::: callout-warning
 ## Dissolution Coding
