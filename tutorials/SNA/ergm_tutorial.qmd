@@ -419,7 +419,7 @@ Goodness of fit (GoF) asks: does the fitted ERGM reproduce structural features o
 
 ```{r}
 #| label: gof-run
-gof_m2 <- gof(m2, nsim = 200, seed = 42)
+gof_m2 <- gof(m2, control = control.gof.ergm(nsim = 200, seed = 42))
 print(gof_m2)
 ```
 
@@ -459,9 +459,8 @@ A model with good GoF on degree distributions and ESP but borderline GoF on geod
 #| fig-cap: "Custom GoF including triad census."
 #| fig-height: 8
 gof_custom <- gof(m2,
-  GOF  = ~ idegree + odegree + esp + distance + model,
-  nsim = 200,
-  seed = 42)
+  GOF     = ~ idegree + odegree + esp + distance + model,
+  control = control.gof.ergm(nsim = 200, seed = 42))
 par(mfrow = c(2, 3))
 plot(gof_custom)
 par(mfrow = c(1, 1))
@@ -609,7 +608,7 @@ In `stergm()`, a **positive** dissolution coefficient means the tie is more like
 #| label: gof-stergm
 #| fig-cap: "GoF for the STERGM. Formation and dissolution components are assessed separately."
 #| fig-height: 8
-gof_stergm <- gof(stergm_fit, nsim = 100, seed = 42)
+gof_stergm <- gof(stergm_fit, control = control.gof.stergm(nsim = 100, seed = 42))
 par(mfrow = c(2, 3))
 plot(gof_stergm)
 par(mfrow = c(1, 1))
