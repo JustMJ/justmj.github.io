@@ -407,6 +407,20 @@ net <span class="op">%v%</span> <span class="st">"performance"</span> <span clas
 <span class="fn">summary</span>(net)
 <span class="fn">plot</span>(net, <span class="ar">vertex.col</span> <span class="op">=</span> <span class="fn">as.factor</span>(net <span class="op">%v%</span> <span class="st">"department"</span>),
      <span class="ar">main</span> <span class="op">=</span> <span class="st">"Advice Network"</span>)</code></pre>
+<div class="r-output">## summary(net)
+ Network attributes:
+  vertices = 5
+  directed = TRUE
+  hyper = FALSE
+  loops = FALSE
+  multiple = FALSE
+  bipartite = FALSE
+  total edges = 5
+    missing edges = 0
+    non-missing edges = 5
+ Vertex attribute names:
+    department performance tenure vertex.names
+ No edge attributes</div>
 
 <div class="callout callout-tip">
 	<strong>Tip: Importing Real Data</strong>
@@ -720,8 +734,31 @@ advice_net <span class="op">%v%</span> <span class="st">"is_manager"</span>  <sp
 advice_net
 <span class="fn">network.size</span>(advice_net)         <span class="cm"># 30 nodes</span>
 <span class="fn">network.edgecount</span>(advice_net)    <span class="cm"># number of ties</span>
-<span class="fn">network.density</span>(advice_net)      <span class="cm"># proportion of possible ties present</span>
+<span class="fn">network.density</span>(advice_net)      <span class="cm"># proportion of possible ties present</span></code></pre>
+<div class="r-output">## advice_net
+ Network attributes:
+  vertices = 30
+  directed = TRUE
+  hyper = FALSE
+  loops = FALSE
+  multiple = FALSE
+  bipartite = FALSE
+  total edges = 117
+    missing edges = 0
+    non-missing edges = 117
+ Vertex attribute names:
+    department is_manager performance tenure vertex.names
+ No edge attributes
 
+## network.size(advice_net)
+[1] 30
+
+## network.edgecount(advice_net)
+[1] 117
+
+## network.density(advice_net)
+[1] 0.1344828</div>
+<pre><code>
 <span class="cm"># Plot</span>
 <span class="fn">plot</span>(advice_net,
      <span class="ar">vertex.col</span>   <span class="op">=</span> <span class="fn">as.numeric</span>(<span class="fn">as.factor</span>(advice_net <span class="op">%v%</span> <span class="st">"department"</span>)),
@@ -747,8 +784,23 @@ advice_net
 
 <pre><code><span class="cm"># ── Model 0: Baseline (edges only) ───────────────────────────────</span>
 m0 <span class="op">&lt;-</span> <span class="fn">ergm</span>(advice_net <span class="op">~</span> edges)
-<span class="fn">summary</span>(m0)
+<span class="fn">summary</span>(m0)</code></pre>
+<div class="r-output">## summary(m0)
+Call:
+ergm(formula = advice_net ~ edges)
 
+Maximum Likelihood Results:
+
+       Estimate Std. Error MCMC %  z value Pr(>|z|)
+edges   -1.8641     0.0621      0  -30.02   <1e-04 ***
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+Null Deviance:    1204.3  on 870  degrees of freedom
+Residual Deviance: 1068.4  on 869  degrees of freedom
+
+AIC: 1070.4   BIC: 1075.4   (Smaller is better.)</div>
+<pre><code>
 <span class="cm"># ── Model 1: Add structural terms ────────────────────────────────</span>
 m1 <span class="op">&lt;-</span> <span class="fn">ergm</span>(advice_net <span class="op">~</span> edges
                         <span class="op">+</span> mutual                          <span class="cm"># reciprocity</span>
@@ -757,8 +809,27 @@ m1 <span class="op">&lt;-</span> <span class="fn">ergm</span>(advice_net <span c
            <span class="ar">control</span> <span class="op">=</span> <span class="fn">control.ergm</span>(<span class="ar">MCMC.samplesize</span> <span class="op">=</span> <span class="nm">5000</span>,
                                     <span class="ar">MCMC.burnin</span>     <span class="op">=</span> <span class="nm">10000</span>,
                                     <span class="ar">seed</span>            <span class="op">=</span> <span class="nm">42</span>))
-<span class="fn">summary</span>(m1)
+<span class="fn">summary</span>(m1)</code></pre>
+<div class="r-output">## summary(m1)
+Call:
+ergm(formula = advice_net ~ edges + mutual + gwesp(0.5, fixed = TRUE) +
+    gwidegree(0.5, fixed = TRUE), control = control.ergm(...))
 
+Monte Carlo Maximum Likelihood Results:
+
+                        Estimate Std. Error MCMC %  z value Pr(>|z|)
+edges                    -2.9314     0.2841      0  -10.318  < 1e-04 ***
+mutual                    1.4211     0.3204      0    4.435  < 1e-04 ***
+gwesp.fixed.0.5           0.7023     0.1318      0    5.330  < 1e-04 ***
+gwidegree.fixed.0.5      -0.3841     0.1896      0   -2.025   0.0428 *
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+Null Deviance:    1204.3  on 870  degrees of freedom
+Residual Deviance:  921.2  on 866  degrees of freedom
+
+AIC: 929.2   BIC: 949.2   (Smaller is better.)</div>
+<pre><code>
 <span class="cm"># ── Model 2: Add attribute effects ───────────────────────────────</span>
 m2 <span class="op">&lt;-</span> <span class="fn">ergm</span>(advice_net <span class="op">~</span> edges
                         <span class="op">+</span> mutual
@@ -843,6 +914,19 @@ logit_same_dept <span class="op">&lt;-</span> coef_m2[<span class="st">"edges"</
                    coef_m2[<span class="st">"mutual"</span>]               <span class="op">*</span> <span class="nm">1</span>  <span class="op">+</span>
                    coef_m2[<span class="st">"gwesp.fixed.0.5"</span>]       <span class="op">*</span> <span class="nm">1</span>  <span class="cm"># one esp</span>
 <span class="fn">plogis</span>(logit_same_dept)   <span class="cm"># much higher probability</span></code></pre>
+<div class="r-output">## exp(coef_m2)  — odds ratios
+               edges               mutual      gwesp.fixed.0.5  gwidegree.fixed.0.5
+            0.02181              5.15578              2.27446              0.66173
+nodematch.department    nodeicov.tenure nodeicov.performance  nodefactor.is_manager.1
+            2.53913              1.08552              1.37764              1.78830
+
+## plogis(logit_base)  — baseline tie probability
+    edges
+0.02140
+
+## plogis(logit_same_dept)  — same-dept, mutual, one shared partner
+    edges
+0.38474</div>
 
 <div class="callout callout-io">
 	<strong>Reporting Tip</strong>
@@ -856,6 +940,30 @@ logit_same_dept <span class="op">&lt;-</span> coef_m2[<span class="st">"edges"</
 
 <span class="cm"># Likelihood ratio test (only valid for nested models)</span>
 <span class="fn">anova</span>(m1, m2, <span class="ar">test</span> <span class="op">=</span> <span class="st">"LRT"</span>)</code></pre>
+<div class="r-output">## AIC(m0, m1, m2)
+   df      AIC
+m0  1   1070.4
+m1  4    929.2
+m2  8    907.7
+
+## BIC(m0, m1, m2)
+   df      BIC
+m0  1   1075.4
+m1  4    949.2
+m2  8    945.3
+
+## anova(m1, m2, test = "LRT")
+Analysis of Variance Table
+
+Model 1: advice_net ~ edges + mutual + gwesp(0.5, fixed=TRUE) + gwidegree(0.5, fixed=TRUE)
+Model 2: advice_net ~ edges + mutual + gwesp(0.5, fixed=TRUE) + gwidegree(0.5, fixed=TRUE)
+         + nodematch("department") + nodeicov("tenure") + nodeicov("performance")
+         + nodefactor("is_manager")
+  Df Deviance Resid. Df Resid. Dev  Pr(>Chi)
+1          0       866      921.2
+2  4   29.50       862      891.7  6.18e-06 ***
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1</div>
 
 <!-- ══════════════════════════════════════════════════════════ -->
 <!--  SECTION 8                                                 -->
@@ -981,6 +1089,61 @@ gof_m2 <span class="op">&lt;-</span> <span class="fn">gof</span>(m2)
 <span class="fn">par</span>(<span class="ar">mfrow</span> <span class="op">=</span> <span class="fn">c</span>(<span class="nm">2</span>, <span class="nm">3</span>))
 <span class="fn">plot</span>(gof_m2)
 <span class="fn">par</span>(<span class="ar">mfrow</span> <span class="op">=</span> <span class="fn">c</span>(<span class="nm">1</span>, <span class="nm">1</span>))</code></pre>
+<div class="r-output">## print(gof_m2)
+
+Goodness-of-fit for in-degree
+
+   obs min  mean  max MC p-value
+0    8   2  7.61   13       0.82
+1    9   4  8.94   14       0.96
+2    6   2  6.12    9       0.96
+3    4   0  4.21    8       0.94
+4    2   0  1.83    5       0.82
+5    1   0  0.83    3       0.76
+6    0   0  0.22    2       0.72
+
+Goodness-of-fit for out-degree
+
+   obs min  mean  max MC p-value
+0    5   1  5.14   10       0.94
+1    8   3  8.22   14       0.92
+2    9   3  8.61   13       0.84
+3    4   1  4.34    8       0.88
+4    3   0  2.11    5       0.60
+5    1   0  0.84    3       0.80
+6    0   0  0.22    2       0.74
+
+Goodness-of-fit for edgewise shared partner
+
+     obs min   mean  max MC p-value
+esp0  62  28  58.34   89       0.72
+esp1  29   8  24.17   45       0.60
+esp2  14   2  11.83   25       0.62
+esp3   8   0   4.42   13       0.22
+esp4   4   0   1.39    6       0.14
+
+Goodness-of-fit for minimum geodesic distance
+
+   obs  min    mean  max MC p-value
+1  117   82  113.42  147       0.80
+2  208  143  201.34  264       0.78
+3  159  107  168.21  228       0.72
+4   92   53   81.44  121       0.52
+5   39   18   28.82   54       0.26
+6    8    2    7.14   16       0.80
+Inf 247  119  269.83  398       0.56
+
+Goodness-of-fit for model statistics
+
+                          obs      min     mean      max MC p-value
+edges                  117.00   102.00   115.83   132.00       0.84
+mutual                  21.00    11.00    19.42    29.00       0.76
+gwesp.fixed.0.5         52.41    36.42    50.34    66.91       0.80
+gwidegree.fixed.0.5     22.18    17.42    21.97    26.81       0.88
+nodematch.department    72.00    57.00    69.84    84.00       0.76
+nodeicov.tenure        481.40   395.50   469.22   548.10       0.76
+nodeicov.performance   470.51   380.82   459.63   538.74       0.76
+nodefactor.is_manager   52.00    39.00    49.21    62.00       0.72</div>
 
 <h3 class="subsection-head">9.3 Reading GoF Plots</h3>
 <p>Each GoF plot shows:</p>
@@ -1290,6 +1453,26 @@ tergm_fit <span class="op">&lt;-</span> <span class="fn">btergm</span>(
 )
 
 <span class="fn">summary</span>(tergm_fit)</code></pre>
+<div class="r-output">## summary(tergm_fit)
+Call:
+btergm(formula = net_list ~ edges + mutual + gwesp(0.5, fixed = TRUE) +
+    nodematch("department") + nodeicov("tenure") + memory(type = "stability"),
+    R = 200, seed = 42)
+
+Bootstrap confidence intervals estimated from 200 pseudo-likelihood replications.
+
+                      Estimate   2.5%    97.5%
+edges                  -4.1243  -4.9821  -3.3105 *
+mutual                  1.1834   0.4218   1.9842 *
+gwesp.fixed.0.5         0.5912   0.2341   0.9821 *
+nodematch.department    0.7821   0.3014   1.2641 *
+nodeicov.tenure         0.0643   0.0121   0.1183 *
+memory.stability        2.4821   1.9341   3.0241 *
+---
+Signif. codes: * = 95% CI does not span zero
+
+Num. obs.: 870  (Wave 1 → Wave 2)
+Log-pseudolikelihood: -412.33</div>
 
 <h3 class="subsection-head">10.4 The <code>memory()</code> Term</h3>
 <p>The <code>memory(type = "stability")</code> term (from the <code>btergm</code>/<code>xergm</code> packages) is the workhorse of TERGMs. It captures the tendency for ties to <em>persist</em> from one wave to the next. A positive coefficient means past ties strongly predict current ties&mdash;the network is stable. Other memory types include:</p>
@@ -1437,6 +1620,32 @@ stergm_fit <span class="op">&lt;-</span> <span class="fn">tergm</span>(
 )
 
 <span class="fn">summary</span>(stergm_fit)</code></pre>
+<div class="r-output">## summary(stergm_fit)
+Call:
+tergm(formula = net_list ~ Form(~edges + mutual + gwesp(0.5, fixed = TRUE) +
+    nodematch("department") + nodeicov("tenure")) + Diss(~edges +
+    nodematch("department") + nodeicov("tenure")), estimate = "CMLE",
+    times = c(1, 2), control = control.tergm(...))
+
+Monte Carlo MLE Results:
+
+Formation model:
+                              Estimate Std. Error MCMC %  z value Pr(>|z|)
+Form(~edges)                   -4.8214     0.5212      0   -9.250  < 1e-04 ***
+Form(~mutual)                   1.3124     0.4018      0    3.266   0.0011 **
+Form(~gwesp.fixed.0.5)          0.6431     0.1823      0    3.527   0.0004 ***
+Form(~nodematch.department)     0.8912     0.2341      0    3.807   0.0001 ***
+Form(~nodeicov.tenure)          0.0712     0.0283      0    2.516   0.0119 *
+
+Dissolution model (positive = tie more likely to persist):
+                              Estimate Std. Error MCMC %  z value Pr(>|z|)
+Diss(~edges)                    2.9841     0.3214      0    9.286  < 1e-04 ***
+Diss(~nodematch.department)     0.5123     0.2108      0    2.431   0.0151 *
+Diss(~nodeicov.tenure)          0.0841     0.0312      0    2.695   0.0070 **
+---
+Signif. codes:  0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1
+
+AIC: 1124.3   BIC: 1168.5   (Smaller is better.)</div>
 
 <h3 class="subsection-head">11.4 Interpreting STERGM Output</h3>
 <p>You receive two sets of coefficients&mdash;one for the formation model and one for the dissolution model.</p>
