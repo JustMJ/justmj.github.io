@@ -5,3 +5,8 @@
 .DS_Store
 justmj.github.io.Rproj
 images/.DS_Store
+
+# Quarto build artefacts
+*_cache/
+*_files/
+.quarto/

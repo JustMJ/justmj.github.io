@@ -1,0 +1,22 @@
+/* Push content below the fixed nav */
+body { padding-top: 3.2em !important; }
+
+/* Tighten the Quarto title block */
+.quarto-title-block { margin-top: 0.5em; }
+#title-block-header { margin-bottom: 1em; }
+
+/* Sidebar TOC spacing */
+#quarto-sidebar { padding-top: 4em; }
+
+/* Soften callout borders to match site palette */
+.callout-note    { border-left-color: #125E8A !important; }
+.callout-warning { border-left-color: #e37682 !important; }
+.callout-tip     { border-left-color: #3a9160 !important; }
+
+/* Make inline code look consistent with site */
+code:not(pre code) {
+  background: rgba(18,94,138,0.10);
+  color: #125E8A;
+  padding: 0.1em 0.35em;
+  border-radius: 3px;
+}

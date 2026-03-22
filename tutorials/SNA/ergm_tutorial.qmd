@@ -1,0 +1,695 @@
+---
+title: "Introduction to Exponential Random Graph Models"
+subtitle: "A comprehensive guide for I-O psychologists — ERGMs, TERGMs, and STERGMs"
+author: "Justin M. Jones"
+date: last-modified
+format:
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 3
+    toc-title: "Contents"
+    toc-location: left
+    code-fold: false
+    code-tools: true
+    highlight-style: github
+    theme: cosmo
+    include-before-body: _topnav.html
+    css: _ergm_styles.css
+    fig-width: 8
+    fig-height: 5
+execute:
+  warning: false
+  message: false
+  cache: true
+---
+
+## 1. Why I-O Psychologists Should Care About ERGMs
+
+Organizational behavior is fundamentally relational. Whether you study team cohesion, advice-seeking, mentorship, knowledge sharing, or workplace friendship, you are studying a *network*. Yet most of our statistical toolkit treats observations as independent — an assumption that is deeply violated when data consist of ties between people.
+
+Exponential Random Graph Models (ERGMs) were designed to fix exactly this problem. An ERGM treats the entire network as a single observation and asks: *given these people and their attributes, what network structures do we observe more (or less) often than chance would predict?*
+
+For I-O psychologists, this matters in several concrete ways:
+
+-   **Advice networks:** Do employees seek advice based on role similarity (homophily), hierarchy, or do cliques emerge from transitivity?
+-   **Friendship and socialization:** Does a newcomer's integration into an informal friendship network depend on demographics, performance, or structural opportunity?
+-   **Leadership networks:** Does informal influence diffuse through reciprocal ties or through bridging positions?
+-   **Team communication:** Are there structural holes that predict information bottlenecks?
+-   **Negative ties:** Do conflict or avoidance ties cluster, and do they co-evolve with positive ties?
+
+::: callout-note
+## I-O Perspective
+
+ERGMs sit in the same conceptual space as multilevel models: both account for the non-independence of observations. The key difference is that in ERGMs, the unit of analysis is the dyad (a pair of people), and the dependencies run in all directions simultaneously. Just as you would not use OLS to model clustered data, you should not use logistic regression on adjacency matrices — ERGMs are the appropriate alternative.
+:::
+
+---
+
+## 2. Network Fundamentals for I-O Contexts
+
+### 2.1 Nodes and Edges
+
+A network (or *graph*) consists of **nodes** (also called vertices or actors) and **edges** (also called ties or links). In most I-O applications, nodes are people (employees, team members, managers) and edges represent relationships (advice-giving, friendship, collaboration, communication).
+
+### 2.2 Directed vs. Undirected
+
+Networks can be **directed** (arrows have a direction: A → B) or **undirected** (ties are symmetric: A — B).
+
+-   **Directed:** advice networks ("I go to this person for advice"), task assignment, reporting relationships.
+-   **Undirected:** friendship ("we consider each other friends"), co-membership on a project.
+
+### 2.3 Key Structural Concepts
+
+| Concept | Definition | I-O Example |
+|---|---|---|
+| **Degree** | Number of ties a node has | How many people an employee advises (out-degree) or is advised by (in-degree) |
+| **Reciprocity** | Proportion of directed ties that are mutual (A→B and B→A) | Are advice ties mutual? Or does advice flow one-way down the hierarchy? |
+| **Transitivity** | Tendency for "friends of friends to be friends" | Knowledge sharing clusters within work groups |
+| **Homophily** | Tendency to form ties with similar others | Same-gender, same-department, or same-race friendship ties |
+| **Structural holes** | Gaps in the network between otherwise connected clusters | Employees who bridge departments hold informational advantages |
+| **Centrality** | Position-based importance (degree, betweenness, eigenvector) | Who controls information flow; who is most influential informally |
+
+### 2.4 Representing Networks in R
+
+In R, networks are stored using the `network` class from the `network` package (part of the `statnet` suite).
+
+```{r}
+#| label: setup
+#| cache: false
+library(statnet)
+library(ergm)
+```
+
+```{r}
+#| label: simple-network
+# Create a directed network from an adjacency matrix
+adj_matrix <- matrix(c(
+  0,1,0,1,0,
+  0,0,1,0,1,
+  0,0,0,1,0,
+  0,0,0,0,1,
+  1,0,0,0,0
+), nrow = 5, byrow = TRUE)
+
+net <- network(adj_matrix, directed = TRUE)
+
+# Add node attributes
+net %v% "department"  <- c("HR", "HR", "IT", "IT", "Finance")
+net %v% "tenure"      <- c(3, 7, 1, 12, 5)
+net %v% "performance" <- c(4.2, 3.8, 4.5, 3.1, 4.0)
+
+# Quick summary
+summary(net)
+```
+
+```{r}
+#| label: fig-simple-net
+#| fig-cap: "A small directed advice network. Nodes are coloured by department."
+plot(
+  net,
+  vertex.col  = as.numeric(as.factor(net %v% "department")),
+  vertex.cex  = 2,
+  arrowhead.cex = 0.8,
+  main = "Simple Advice Network (n = 5)"
+)
+legend("bottomleft",
+  legend = levels(as.factor(net %v% "department")),
+  fill   = 1:3, bty = "n", cex = 0.85)
+```
+
+::: callout-tip
+## Importing Real Data
+
+Most I-O datasets come as edge lists or sociomatrices from survey software. Load an edge list with `network(edgelist, matrix.type = "edgelist", directed = TRUE)`.
+:::
+
+---
+
+## 3. The ERGM Framework: Core Theory
+
+### 3.1 The Problem ERGMs Solve
+
+Imagine you survey 50 employees asking who they turn to for advice. You now have a 50×50 adjacency matrix with about 2,450 potential dyads (directed). A naive approach might run a logistic regression predicting whether each dyad has a tie. The problem: those 2,450 observations are *not independent*. Whether A→B depends on whether B→A (reciprocity), whether A has many ties in general (degree), and whether A and C are both connected to B (transitivity). Ordinary logistic regression will produce biased standard errors and incorrect inferences.
+
+ERGMs solve this by modeling the *whole network jointly* as a single random variable and specifying which structural features (terms) are important.
+
+### 3.2 The Core Probability Model
+
+An ERGM defines the probability of observing a particular network **Y** as:
+
+$$P(\mathbf{Y} = \mathbf{y}) = \frac{\exp\{\boldsymbol{\theta}^T \mathbf{g}(\mathbf{y})\}}{\kappa(\boldsymbol{\theta})}$$
+
+where:
+
+-   $\mathbf{g}(\mathbf{y})$ is a vector of *sufficient statistics* — network summary features like edge count, mutual dyads, triangles, etc.
+-   $\boldsymbol{\theta}$ is a vector of parameters (one per statistic) estimated from the data.
+-   $\kappa(\boldsymbol{\theta})$ is a normalizing constant that sums over *all possible networks* on $n$ nodes. This is computationally intractable for large networks, which is why ERGMs use MCMC-MLE.
+
+### 3.3 The Change Score Interpretation
+
+A more intuitive form comes from the **conditional log-odds** of a single tie existing, given all other ties:
+
+$$\log\left[\frac{P(Y_{ij}=1 \mid \mathbf{Y}_{-ij})}{P(Y_{ij}=0 \mid \mathbf{Y}_{-ij})}\right] = \boldsymbol{\theta}^T \delta\mathbf{g}_{ij}(\mathbf{y})$$
+
+Here, $\delta\mathbf{g}_{ij}(\mathbf{y})$ is the **change statistic** — how much each network statistic changes if you toggle the $i \to j$ tie from 0 to 1, holding all other ties fixed. Each $\theta$ coefficient tells you how much (in log-odds) the probability of a tie changes for a one-unit increase in the corresponding statistic.
+
+### 3.4 Why Not Just Use Logistic Regression on Dyads?
+
+Even QAP (quadratic assignment procedure) regression, while it corrects p-values via permutation, cannot model *endogenous network tendencies* like reciprocity or transitivity as predictors of tie formation. ERGMs can. If your theoretical model says "ties form partly because of triadic closure" (which is almost always true in organizations), you need ERGMs.
+
+---
+
+## 4. ERGM Model Terms
+
+### 4.1 Structural Terms
+
+| Term | What It Captures | I-O Interpretation |
+|---|---|---|
+| `edges` | Baseline density (intercept-like) | Overall tendency to form ties; almost always included |
+| `mutual` | Reciprocity: A→B and B→A co-occur | Do advice relationships go both ways? |
+| `gwesp(decay, fixed=TRUE)` | Geometrically-weighted edgewise shared partners | Transitivity without degeneracy |
+| `gwdegree(decay, fixed=TRUE)` | Geometrically-weighted degree (undirected) | Controls degree heterogeneity |
+| `gwidegree(decay, fixed=TRUE)` | Geometrically-weighted in-degree | Popularity effects / hub structure |
+| `gwodegree(decay, fixed=TRUE)` | Geometrically-weighted out-degree | Activity / expansiveness |
+| `ctriple` | Cyclic triples (A→B, B→C, C→A) | Hierarchy: negative θ = cyclic triads suppressed |
+
+::: callout-warning
+## Degeneracy Warning
+
+The `triangle` and `kstar` terms are notorious for causing *model degeneracy* — the model produces distributions that are nearly entirely empty or nearly entirely full networks. In practice, use the geometrically-weighted alternates (`gwesp`, `gwdegree`) instead.
+:::
+
+### 4.2 Nodal Attribute Terms
+
+| Term | What It Captures | I-O Example |
+|---|---|---|
+| `nodecov("attr")` | Main effect of a continuous attribute | Do higher performers have more ties overall? |
+| `nodeicov("attr")` | In-degree version | Are higher-tenure employees sought out more? |
+| `nodeocov("attr")` | Out-degree version | Do extraverted employees nominate more? |
+| `nodefactor("attr")` | Main effect of a categorical attribute | Do managers have more ties than ICs? |
+| `nodematch("attr")` | Homophily: ties more likely between same-category nodes | Same-department friendships |
+| `nodematch("attr", diff=TRUE)` | Differential homophily | Is gender homophily stronger for women? |
+| `absdiff("attr")` | Tie likelihood decreases with attribute difference | Do similar-tenure employees befriend each other? |
+
+### 4.3 Dyadic Covariate Terms
+
+| Term | What It Captures | I-O Example |
+|---|---|---|
+| `edgecov(matrix)` | A dyad-level covariate | Does physical proximity predict advice ties? |
+| `edgecov(network)` | Another network as a predictor | Does prior project co-membership predict current friendship? |
+
+---
+
+## 5. Getting Started in R: A Running Example
+
+We will use a simulated organizational advice network throughout the rest of this tutorial. The organization has 30 employees across three departments (Operations, HR, IT), with varying tenure and performance ratings.
+
+```{r}
+#| label: simulate-network
+set.seed(42)
+n <- 30
+
+# Node attributes
+dept        <- rep(c("Operations", "HR", "IT"), each = 10)
+tenure      <- round(runif(n, 1, 15), 1)
+performance <- round(rnorm(n, mean = 4, sd = 0.5), 2)
+is_manager  <- c(rep(1,2), rep(0,8),   # 2 managers per dept
+                 rep(1,2), rep(0,8),
+                 rep(1,2), rep(0,8))
+
+# Build a directed network with department homophily + manager attraction
+advice_net <- network(n, directed = TRUE, density = 0)
+
+for (i in 1:n) {
+  for (j in 1:n) {
+    if (i == j) next
+    p_base      <- 0.05
+    p_same_dept <- if (dept[i] == dept[j]) 0.12 else 0
+    p_mgr       <- if (is_manager[j] == 1) 0.10 else 0
+    p_tenure    <- tenure[j] / 100
+    p_tie       <- min(1, p_base + p_same_dept + p_mgr + p_tenure)
+    if (runif(1) < p_tie) add.edge(advice_net, i, j)
+  }
+}
+
+# Attach node attributes
+advice_net %v% "department"  <- dept
+advice_net %v% "tenure"      <- tenure
+advice_net %v% "performance" <- performance
+advice_net %v% "is_manager"  <- is_manager
+
+# Network summary
+advice_net
+network.size(advice_net)
+network.edgecount(advice_net)
+network.density(advice_net)
+```
+
+```{r}
+#| label: fig-org-network
+#| fig-cap: "Simulated organizational advice network (n = 30). Shape = role (triangle = manager, circle = employee); colour = department."
+dept_col <- c("Operations" = "#3a7fc1", "HR" = "#d97a32", "IT" = "#7b3fb5")
+node_col <- dept_col[advice_net %v% "department"]
+
+plot(
+  advice_net,
+  vertex.col   = node_col,
+  vertex.sides = ifelse(advice_net %v% "is_manager" == 1, 3, 50),
+  vertex.cex   = 1.8,
+  arrowhead.cex = 0.6,
+  main = "Organizational Advice Network",
+  sub  = "Shape = role (▲ manager); Colour = department"
+)
+legend("bottomleft",
+  legend = names(dept_col),
+  fill   = dept_col,
+  bty    = "n", cex = 0.85)
+```
+
+---
+
+## 6. Fitting Your First ERGM
+
+### 6.1 Model Building Strategy
+
+Build models incrementally:
+
+1.  **Baseline:** `edges` only — establishes the baseline log-odds of a tie.
+2.  **Structural controls:** Add `mutual` (if directed) and geometrically-weighted terms (`gwesp`, `gwidegree`). These control for endogenous network tendencies before adding exogenous predictors.
+3.  **Attribute effects:** Add nodal and dyadic covariates corresponding to your theoretical hypotheses.
+4.  **Check diagnostics:** Inspect MCMC trace plots and goodness-of-fit before interpreting.
+
+### 6.2 Fitting the Models
+
+```{r}
+#| label: fit-m0
+# Model 0: Baseline (edges only)
+m0 <- ergm(advice_net ~ edges)
+summary(m0)
+```
+
+```{r}
+#| label: fit-m1
+# Model 1: Structural terms
+m1 <- ergm(
+  advice_net ~ edges
+               + mutual
+               + gwesp(0.5, fixed = TRUE)
+               + gwidegree(0.5, fixed = TRUE),
+  control = control.ergm(MCMC.samplesize = 4000,
+                         MCMC.burnin     = 10000,
+                         seed            = 42)
+)
+summary(m1)
+```
+
+```{r}
+#| label: fit-m2
+# Model 2: Add attribute effects
+m2 <- ergm(
+  advice_net ~ edges
+               + mutual
+               + gwesp(0.5, fixed = TRUE)
+               + gwidegree(0.5, fixed = TRUE)
+               + nodematch("department")
+               + nodeicov("tenure")
+               + nodeicov("performance")
+               + nodefactor("is_manager"),
+  control = control.ergm(MCMC.samplesize = 4000,
+                         MCMC.burnin     = 10000,
+                         seed            = 42)
+)
+summary(m2)
+```
+
+### 6.3 MCMC Control Parameters
+
+| Parameter | What It Does | Guidance |
+|---|---|---|
+| `MCMC.samplesize` | Networks sampled per iteration | Default 500; increase to 4,000–20,000 for noisy models |
+| `MCMC.burnin` | Steps discarded at chain start | Default 10,000; increase if traces show poor mixing |
+| `MCMC.interval` | Thinning interval | Increase if autocorrelation is high |
+| `seed` | Random seed | Always set for reproducibility |
+
+---
+
+## 7. Interpreting ERGM Results
+
+### 7.1 The Log-Odds Scale
+
+ERGM estimates are on the **log-odds scale**, just like logistic regression. The coefficient is the change in the log-odds of a tie forming for a one-unit increase in the corresponding change statistic.
+
+### 7.2 Converting to Odds Ratios and Probabilities
+
+```{r}
+#| label: interpret-coefs
+# Odds ratios
+round(exp(coef(m2)), 3)
+
+# Baseline tie probability (all change statistics = 0)
+plogis(coef(m2)["edges"])
+
+# Same-department tie with reciprocity and one shared partner
+logit_rich <- coef(m2)["edges"] +
+              coef(m2)["nodematch.department"]  * 1 +
+              coef(m2)["mutual"]                * 1 +
+              coef(m2)["gwesp.fixed.0.5"]       * 1
+plogis(logit_rich)
+```
+
+::: callout-note
+## Reporting Tip
+
+For an I-O audience, odds ratios are often more intuitive than log-odds. For example, `exp(nodematch.department)` ≈ 2.5 means same-department pairs are about 2.5× more likely to have an advice tie than cross-department pairs, after controlling for all other terms.
+:::
+
+### 7.3 Model Comparison
+
+```{r}
+#| label: model-comparison
+AIC(m0, m1, m2)
+BIC(m0, m1, m2)
+
+# Likelihood ratio test (only valid for nested models)
+anova(m1, m2, test = "LRT")
+```
+
+---
+
+## 8. MCMC Diagnostics
+
+Because ERGM estimation uses Markov chain Monte Carlo, you must verify that the MCMC chains have converged before trusting your estimates.
+
+### 8.1 MCMC Trace Plots
+
+```{r}
+#| label: mcmc-diag
+#| fig-cap: "MCMC diagnostics for Model 2. Left column: trace plots — a well-mixed chain looks like a 'hairy caterpillar' oscillating randomly around zero. Right column: density plots — should be bell-shaped and centred near zero."
+#| fig-height: 10
+mcmc.diagnostics(m2)
+```
+
+### 8.2 What to Do When MCMC Does Not Converge
+
+::: callout-warning
+## Non-Convergence Signs
+
+-   Trace plots show long-range drifts or "stickiness"
+-   Coefficients are implausibly large (\>10 or \<−10)
+-   The `MCMC %` column in the summary is high
+-   Model prints warnings about negative log-likelihood
+:::
+
+Remedies, in order of preference:
+
+1.  Increase `MCMC.samplesize`, `MCMC.burnin`, and `MCMC.interval`.
+2.  Remove degenerate-prone terms (`triangle`, `kstar`) and replace with geometrically-weighted equivalents.
+3.  Try different decay values in `gwesp()` or `gwdegree()`.
+4.  Simplify the model to identify the problematic term.
+
+---
+
+## 9. Goodness of Fit
+
+Goodness of fit (GoF) asks: does the fitted ERGM reproduce structural features of the *observed* network that were not explicitly included as terms?
+
+### 9.1 Running GoF
+
+```{r}
+#| label: gof-run
+gof_m2 <- gof(m2, nsim = 200, seed = 42)
+print(gof_m2)
+```
+
+### 9.2 GoF Plots
+
+```{r}
+#| label: fig-gof
+#| fig-cap: "Goodness-of-fit plots for Model 2. Black line = observed; box-and-whisker = distribution from 200 simulated networks. Good fit: observed line passes through the boxes."
+#| fig-height: 8
+par(mfrow = c(2, 3))
+plot(gof_m2)
+par(mfrow = c(1, 1))
+```
+
+### 9.3 Interpreting GoF
+
+-   **Black line through boxes** → good fit at that statistic.
+-   **Black line outside boxes** → the model cannot reproduce that structural property — revisit your terms.
+
+| GoF Problem | Likely Cause | Fix |
+|---|---|---|
+| Degree distribution: too few high-degree nodes | Missing hub structure | Add `gwidegree` |
+| ESP distribution poorly reproduced | Transitivity not captured | Adjust `gwesp` decay |
+| Geodesic distances too short | Transitivity over-specified | Reduce `gwesp` decay |
+| Simulated networks too dense | Possible degeneracy | Check MCMC traces |
+
+::: callout-tip
+## Rule of Thumb
+
+A model with good GoF on degree distributions and ESP but borderline GoF on geodesic distances is generally acceptable for publication. Always report at least degree distributions and ESP.
+:::
+
+### 9.4 Custom GoF Statistics
+
+```{r}
+#| label: gof-custom
+#| fig-cap: "Custom GoF including triad census."
+#| fig-height: 8
+gof_custom <- gof(m2,
+  GOF  = ~ idegree + odegree + esp + distance + model,
+  nsim = 200,
+  seed = 42)
+par(mfrow = c(2, 3))
+plot(gof_custom)
+par(mfrow = c(1, 1))
+```
+
+---
+
+## 10. Temporal ERGMs (TERGMs)
+
+### 10.1 Why Temporal ERGMs?
+
+Organizations are not static. TERGMs extend ERGMs to panel network data — multiple snapshots of the same network — allowing you to model *how networks evolve over time*.
+
+::: callout-note
+## I-O Applications
+
+-   How does a new hire's advice network evolve over their first year?
+-   Does a team reorganization disrupt informal communication ties?
+-   Does a mentorship program alter the network beyond the assigned pairs?
+:::
+
+### 10.2 The TERGM Probability Model
+
+A TERGM conditions on the previous network state $\mathbf{Y}_{t-1}$:
+
+$$P(\mathbf{Y}_t = \mathbf{y}_t \mid \mathbf{Y}_{t-1} = \mathbf{y}_{t-1}) = \frac{\exp\{\boldsymbol{\theta}^T \mathbf{g}(\mathbf{y}_t, \mathbf{y}_{t-1})\}}{\kappa(\boldsymbol{\theta}, \mathbf{y}_{t-1})}$$
+
+The sufficient statistics $\mathbf{g}$ can now depend on both the current network *and* the prior network, allowing you to model stability (past ties predict current ties) and network evolution.
+
+### 10.3 Fitting TERGMs with `btergm`
+
+```{r}
+#| label: simulate-waves
+library(btergm)
+set.seed(99)
+
+advice_t1 <- advice_net   # Wave 1
+
+# Wave 2: drop ~20% of ties, add some new ones
+mat_t2 <- as.matrix(advice_t1)
+mat_t2[mat_t2 == 1 & matrix(runif(n^2), n, n) < 0.20] <- 0
+for (i in 1:n) for (j in 1:n)
+  if (i != j && !mat_t2[i,j] && runif(1) < 0.03) mat_t2[i,j] <- 1
+
+advice_t2 <- network(mat_t2, directed = TRUE)
+advice_t2 %v% "department"  <- dept
+advice_t2 %v% "tenure"      <- tenure
+advice_t2 %v% "is_manager"  <- is_manager
+
+net_list <- list(advice_t1, advice_t2)
+```
+
+```{r}
+#| label: fit-tergm
+tergm_fit <- btergm(
+  net_list ~ edges
+             + mutual
+             + gwesp(0.5, fixed = TRUE)
+             + nodematch("department")
+             + nodeicov("tenure")
+             + memory(type = "stability"),
+  R    = 200,
+  seed = 42
+)
+summary(tergm_fit)
+```
+
+### 10.4 The `memory()` Term
+
+The `memory(type = "stability")` term captures the tendency for ties to *persist* from one wave to the next. A positive coefficient means past ties strongly predict current ties. For example, a coefficient of 2.5 means ties that existed last period are $\exp(2.5) \approx 12\times$ more likely to still exist.
+
+Other types: `"innovation"` (tendency to form ties to new alters) and `"loss"` (tie dissolution specifically).
+
+::: callout-warning
+## Bootstrap vs. MCMC Inference
+
+`btergm` uses bootstrapped pseudo-likelihood, which is computationally efficient but is an approximation. For smaller networks where full likelihood is tractable, consider the `tergm` package (part of statnet) which uses MCMC-MLE.
+:::
+
+---
+
+## 11. Separable Temporal ERGMs (STERGMs)
+
+### 11.1 The Key Idea
+
+TERGMs treat formation and dissolution of ties as a single joint process. **STERGMs** (Krivitsky & Handcock, 2014) separate them:
+
+-   A **formation model**: Among ties that did *not* exist at $t-1$, which ones form at $t$?
+-   A **dissolution model**: Among ties that *did* exist at $t-1$, which ones persist (equivalently, which dissolve)?
+
+::: callout-note
+## I-O Example: Mentorship Networks
+
+**Formation:** New mentorship ties form between junior employees and high-tenure managers in the same department — proximity and status homophily drive formation.
+
+**Dissolution:** Existing ties dissolve when the mentor is promoted or the protégé reaches a tenure threshold. A single TERGM would conflate these mechanisms into one coefficient.
+:::
+
+### 11.2 The STERGM Probability Model
+
+$$P(\mathbf{Y}_t \mid \mathbf{Y}_{t-1}) = P^+(\mathbf{Y}^+_t \mid \mathbf{Y}_{t-1}) \times P^-(\mathbf{Y}^-_t \mid \mathbf{Y}_{t-1})$$
+
+Each of $P^+$ and $P^-$ is an ERGM in its own right, with separate parameters.
+
+### 11.3 Fitting STERGMs in R
+
+```{r}
+#| label: fit-stergm
+library(tergm)
+
+stergm_fit <- stergm(
+  net_list,
+  formation  = ~ edges + mutual + gwesp(0.5, fixed = TRUE)
+                 + nodematch("department") + nodeicov("tenure"),
+  dissolution = ~ edges + nodematch("department") + nodeicov("tenure"),
+  estimate   = "CMLE",
+  times      = c(1, 2),
+  control    = control.stergm(
+    MCMC.samplesize = 4000,
+    seed            = 42
+  )
+)
+summary(stergm_fit)
+```
+
+### 11.4 Interpreting STERGM Output
+
+You receive two sets of coefficients — one for the formation model and one for the dissolution model.
+
+| Parameter | Formation ($\theta^+$) | Dissolution ($\theta^-$) |
+|---|---|---|
+| `edges` | Log-odds of a *new* tie forming | Log-odds of an *existing* tie persisting |
+| `nodematch.department` | Positive → same-dept pairs more likely to form new ties | Positive → same-dept ties are more stable |
+| `nodeicov.tenure` | Positive → high-tenure alters attract new advisees | Positive → ties to high-tenure alters are stickier |
+
+::: callout-warning
+## Dissolution Coding
+
+In `stergm()`, a **positive** dissolution coefficient means the tie is more likely to *persist* (dissolution probability *decreases*). Always check the documentation — some presentations code dissolution in the opposite direction.
+:::
+
+### 11.5 GoF for STERGMs
+
+```{r}
+#| label: gof-stergm
+#| fig-cap: "GoF for the STERGM. Formation and dissolution components are assessed separately."
+#| fig-height: 8
+gof_stergm <- gof(stergm_fit, nsim = 100, seed = 42)
+par(mfrow = c(2, 3))
+plot(gof_stergm)
+par(mfrow = c(1, 1))
+```
+
+---
+
+## 12. Common Pitfalls and Best Practices
+
+### 12.1 Model Degeneracy
+
+Degeneracy occurs when the ERGM probability distribution becomes bimodal — almost all probability mass is on either the empty or complete network. Your observed network then sits in the near-zero probability region.
+
+**Prevention:** Avoid `triangle` and `kstar` terms; use `gwesp` and `gwdegree`. A degenerate model's MCMC samples will alternate between near-empty and near-full networks.
+
+### 12.2 Sample Size
+
+ERGMs are fit to a *single network*. As a rough guideline:
+
+-   **\< 20 nodes:** Usually underpowered; consider descriptive analysis.
+-   **20–50 nodes:** Viable but be parsimonious with terms.
+-   **50–200 nodes:** The sweet spot for most ERGM analyses.
+-   **\> 200 nodes:** MCMC-MLE can be slow; consider pseudo-likelihood methods or parallel processing.
+
+### 12.3 Network Data Collection Issues
+
+-   **Boundary specification:** Carefully define who is "in" the network. Partial networks create artificial boundary effects.
+-   **Roster vs. free-recall:** Roster-based surveys produce more complete data than free-recall. Missing ties bias ERGM estimates.
+-   **Nomination limits:** Imposing a fixed limit (e.g., "name up to 5 people") artificially constrains the degree distribution.
+
+### 12.4 Decay Parameter Selection
+
+The decay parameter in `gwesp(decay)` controls how quickly geometric weights diminish. Common practice:
+
+-   Try a range of values (0.25, 0.5, 0.75, 1.0, 1.5) and select based on GoF.
+-   Set `fixed = FALSE` to estimate the decay parameter if your network is large enough.
+-   Report your chosen decay value and sensitivity of results to different values.
+
+---
+
+## 13. Reporting ERGMs in APA-Style Papers
+
+### 13.1 Methods Section
+
+-   Describe the network data collection procedure (roster vs. free-recall, number of waves, response rate, boundary specification).
+-   State the R packages and version numbers used (`statnet`, `ergm`, `tergm`, `btergm`).
+-   Report MCMC parameters (sample size, burn-in, seed) for reproducibility.
+
+### 13.2 Results Section
+
+-   Report estimates, standard errors, and p-values for all model terms.
+-   Report both log-odds coefficients and odds ratios (exponentiated coefficients).
+-   Report GoF results: *"GoF diagnostics showed that the model adequately reproduced the observed in-degree distribution, out-degree distribution, edgewise shared partner distribution, and geodesic distance distribution (see Supplementary Materials)."*
+
+### 13.3 R Session Info
+
+```{r}
+#| label: session-info
+#| code-fold: true
+sessionInfo()
+```
+
+---
+
+## 14. Further Reading
+
+### Foundational Papers
+
+-   Frank, O., & Strauss, D. (1986). Markov graphs. *Journal of the American Statistical Association, 81*, 832–842.
+-   Robins, G., Pattison, P., Kalish, Y., & Lusher, D. (2007). An introduction to exponential random graph (*p*\*) models for social networks. *Social Networks, 29*, 173–191.
+-   Hunter, D. R., & Handcock, M. S. (2006). Inference in curved exponential family models for networks. *Journal of Computational and Graphical Statistics, 15*, 565–583. — Introduces `gwesp`/`gwdegree`.
+-   Krivitsky, P. N., & Handcock, M. S. (2014). A separable model for dynamic networks. *Journal of the Royal Statistical Society: Series B, 76*, 29–46. — The STERGM paper.
+
+### I-O and Organizational Applications
+
+-   Lusher, D., Koskinen, J., & Robins, G. (Eds.). (2013). *Exponential random graph models for social networks: Theory, methods and applications.* Cambridge University Press.
+-   Rank, O. N., Robins, G. L., & Pattison, P. E. (2010). Structural logic of intraorganizational networks. *Organization Science, 21*, 745–764.
+-   Brass, D. J., Galaskiewicz, J., Greve, H. R., & Tsai, W. (2004). Taking stock of networks and organizations. *Academy of Management Journal, 47*, 795–817.
+
+### R Resources
+
+-   [Official `ergm` package vignette](https://cran.r-project.org/web/packages/ergm/vignettes/ergm.pdf)
+-   [statnet.org](https://statnet.org) — Documentation, workshops, and tutorials for the full statnet suite.
+-   Morris, M., Handcock, M. S., & Hunter, D. R. (2008). Specification of exponential-family random graph models. *Journal of Statistical Software, 24*(4).
