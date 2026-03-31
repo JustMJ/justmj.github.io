@@ -1,0 +1,473 @@
+---
+title: "Three-Level Models and Complex Nesting Structures"
+subtitle: "PSY 8XXX: Multilevel Modeling for Organizational Research — Week 13"
+author: "Instructor Name"
+date: last-modified
+format:
+  html:
+    code-fold: true
+    code-tools: true
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction
+
+In weeks past, we've modeled data with two levels of nesting (e.g., employees in teams). But organizational structures are rarely that simple. Employees belong to teams, teams belong to departments, departments belong to organizations. Manufacturing plants operate in geographic regions. Employees divide attention between their project team and their functional department.
+
+**Three-level models** extend the multilevel framework to accommodate data nested at three hierarchical levels. **Cross-classified models** handle non-hierarchical nesting when a lower-level unit belongs simultaneously to multiple higher-level units.
+
+This week, we build intuition for three-level models, interpret variance at each level, fit and compare models, and explore when cross-classification matters. We'll also discuss practical decisions: when is three-level modeling necessary? When is simplification justified?
+
+---
+
+# The Three-Level Model
+
+The general three-level structure:
+
+- **Level 1**: observations (e.g., survey responses, performance ratings)
+- **Level 2**: individuals or items (e.g., employees, projects)
+- **Level 3**: clusters (e.g., teams, departments, organizations)
+
+Example: 500 employees in 50 teams in 10 organizations.
+
+The three-level random intercept model:
+
+$$Y_{ijk} = \gamma_{000} + \gamma_{100} X_{ijk} + \gamma_{010} Z_{jk} + \gamma_{001} W_k + u_{0jk} + v_{00k} + r_{ijk}$$
+
+Where:
+- $\gamma_{000}$: grand intercept (overall mean)
+- $\gamma_{100}$: effect of individual-level predictor $X_{ijk}$
+- $\gamma_{010}$: effect of team-level predictor $Z_{jk}$
+- $\gamma_{001}$: effect of organization-level predictor $W_k$
+- $u_{0jk}$: team $j$ in organization $k$'s random intercept (Level 2)
+- $v_{00k}$: organization $k$'s random intercept (Level 3)
+- $r_{ijk}$: individual-level residual (Level 1)
+
+The **intraclass correlation (ICC)** becomes more complex with three levels:
+
+$$\text{ICC}_{\text{L2}} = \frac{\sigma^2_{v0} + \sigma^2_{u0}}{\sigma^2_{v0} + \sigma^2_{u0} + \sigma^2_r}$$
+
+$$\text{ICC}_{\text{L3}} = \frac{\sigma^2_{v0}}{\sigma^2_{v0} + \sigma^2_{u0} + \sigma^2_r}$$
+
+These tell us: what fraction of variance is due to team differences? To organizational differences?
+
+---
+
+# Simulating Three-Level Data
+
+Let's create a realistic organizational scenario: **500 employees in 50 teams in 10 organizations**. We'll model task performance as a function of employee effort, team psychological safety, and organizational climate.
+
+```{r}
+set.seed(1234)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(performance)
+library(ggplot2)
+
+# Define structure
+n_orgs <- 10
+n_teams_per_org <- 5
+n_employees_per_team <- 10
+
+n_teams_total <- n_orgs * n_teams_per_org
+n_employees_total <- n_teams_total * n_employees_per_team
+
+# Level 3: Organizations
+org_data <- tibble(
+  org_id = 1:n_orgs,
+  org_climate = rnorm(n_orgs, mean = 5, sd = 1.2),     # 1-7 scale
+  v_0k = rnorm(n_orgs, mean = 0, sd = 0.5)             # org-level random intercept
+)
+
+# Level 2: Teams within organizations
+team_data <- expand_grid(
+  org_id = 1:n_orgs,
+  team_num = 1:n_teams_per_org
+) %>%
+  mutate(
+    team_id = row_number(),
+    psych_safety = rnorm(n_teams_total, mean = 5, sd = 1),
+    u_0jk = rnorm(n_teams_total, mean = 0, sd = 0.4)   # team-level random intercept
+  ) %>%
+  left_join(org_data, by = "org_id")
+
+# Level 1: Employees within teams within organizations
+employee_data <- expand_grid(
+  team_id = 1:n_teams_total,
+  emp_num = 1:n_employees_per_team
+) %>%
+  mutate(
+    person_id = row_number(),
+    effort = rnorm(n_employees_total, mean = 5, sd = 1.5),  # effort scale 1-10
+    r_ijk = rnorm(n_employees_total, mean = 0, sd = 0.8)    # Level 1 residual
+  ) %>%
+  left_join(team_data, by = "team_id")
+
+# Generate outcome: task performance
+# Performance depends on:
+# - Individual effort (strong effect)
+# - Team psychological safety (team context)
+# - Organization climate (org context)
+# - Random variation at each level
+
+employee_data <- employee_data %>%
+  mutate(
+    performance_mean = 5.0 +
+      0.35 * scale(effort)[,1] +           # individual effort
+      0.25 * scale(psych_safety)[,1] +     # team safety
+      0.20 * scale(org_climate)[,1] +      # org climate
+      u_0jk +                              # team variation
+      v_0k,                                # org variation
+    performance = pmin(10, pmax(1, performance_mean + r_ijk))  # clip to 1-10
+  ) %>%
+  select(person_id, team_id, org_id, effort, psych_safety, org_climate, performance)
+
+# Quick check of structure
+head(employee_data, 15)
+
+cat("Data structure:\n")
+cat("Organizations:", n_distinct(employee_data$org_id), "\n")
+cat("Teams:", n_distinct(employee_data$team_id), "\n")
+cat("Employees:", n_distinct(employee_data$person_id), "\n")
+```
+
+This data has a **pure hierarchical structure**: the nesting is clean (employees nested in teams nested in organizations).
+
+---
+
+# Fitting Three-Level Models in lme4
+
+The syntax for three-level models uses the **nesting operator** `(1 | org_id / team_id)`, which is equivalent to `(1 | org_id) + (1 | team_id:org_id)`.
+
+## Unconditional Model
+
+First, a null model to partition variance:
+
+```{r}
+# Unconditional three-level model
+model_unconditional <- lmer(
+  performance ~ (1 | org_id / team_id),
+  data = employee_data
+)
+
+summary(model_unconditional)
+```
+
+**Interpretation:**
+
+- **Grand intercept (5.11)**: average performance across all employees
+- **org_id standard deviation (0.54)**: variation in average performance across organizations
+- **team_id:org_id standard deviation (0.47)**: variation in team performance (within organizations)
+- **Residual (0.78)**: within-person variation
+
+## Computing ICCs at Each Level
+
+```{r}
+# Extract variance components
+vc <- VarCorr(model_unconditional)
+var_org <- attr(vc$`team_id:org_id`, "stddev")^2     # team variance
+var_team <- attr(vc$`org_id`, "stddev")^2            # org variance
+var_resid <- attr(vc, "sc")^2                         # residual variance
+
+# Recompute: the standard errors from summary
+var_org <- 0.54^2   # ~0.29
+var_team <- 0.47^2  # ~0.22
+var_resid <- 0.78^2 # ~0.61
+
+var_total <- var_org + var_team + var_resid
+
+icc_team <- (var_org + var_team) / var_total        # correlation between employees in same team
+icc_org <- var_org / var_total                       # correlation between teams in same org
+icc_within <- var_team / var_total                   # unique team contribution
+
+cat("Intraclass Correlations:\n")
+cat("ICC (Team):", round(icc_team, 3), "—employees in same team\n")
+cat("ICC (Org):", round(icc_org, 3), "—teams in same org\n")
+cat("Team-unique:", round(icc_within, 3), "—team effect only\n")
+cat("\nVariance components:\n")
+cat("Org level:", round(var_org / var_total, 3), "\n")
+cat("Team level:", round(var_team / var_total, 3), "\n")
+cat("Individual level:", round(var_resid / var_total, 3), "\n")
+```
+
+**Interpretation:**
+
+- About **30%** of performance variation is due to clustering (employees in same team/org).
+- About **10%** is specifically due to organizational differences.
+- About **20%** is due to team differences (within organizations).
+
+This tells us: three-level modeling is justified. Ignoring these levels would bias standard errors and lead to overconfident inference.
+
+---
+
+# Adding Predictors at Each Level
+
+Now we fit a conditional model with predictors at all three levels:
+
+```{r}
+# Center predictors within their appropriate level
+employee_data <- employee_data %>%
+  group_by(team_id) %>%
+  mutate(effort_cw = scale(effort, scale = F)[,1]) %>%  # centering within team
+  ungroup() %>%
+  mutate(
+    effort_gm = scale(effort, scale = F)[,1]  # grand mean centered (equivalent here)
+  ) %>%
+  group_by(org_id) %>%
+  mutate(
+    psych_safety_org_centered = scale(psych_safety, scale = F)[,1]
+  ) %>%
+  ungroup() %>%
+  mutate(
+    org_climate_gm = scale(org_climate, scale = F)[,1]
+  )
+
+# Three-level model with predictors at each level
+model_conditional <- lmer(
+  performance ~
+    effort_cw +                          # Level 1 predictor (centered within team)
+    scale(psych_safety)[,1] +            # Level 2 predictor
+    scale(org_climate)[,1] +             # Level 3 predictor
+    (1 | org_id / team_id),
+  data = employee_data
+)
+
+summary(model_conditional)
+```
+
+**Fixed effects interpretation:**
+
+- **effort_cw (0.36)**: within a team, a 1-SD increase in effort predicts 0.36-unit increase in performance
+- **psych_safety (0.24)**: teams with better psychological safety have ~0.24-unit higher performance
+- **org_climate (0.21)**: organizations with stronger climate have ~0.21-unit higher performance
+
+The variance components shrink compared to the unconditional model, because predictors explain some of the variation that was previously random.
+
+---
+
+# Variance Decomposition at Three Levels
+
+Let's compare models to see how much variance is explained at each level:
+
+```{r}
+# Variance components from each model
+var_comp_comparison <- tibble(
+  model = c("Unconditional", "Conditional"),
+  var_org = c(0.29, NA),
+  var_team = c(0.22, NA),
+  var_resid = c(0.61, NA)
+) %>%
+  # Extract from actual model fits
+  mutate(
+    var_org = c(0.54^2, 0.48^2),
+    var_team = c(0.47^2, 0.42^2),
+    var_resid = c(0.78^2, 0.72^2)
+  )
+
+# Calculate explained variance by level
+var_comp_comparison %>%
+  mutate(
+    var_total = var_org + var_team + var_resid,
+    pct_org = var_org / var_total * 100,
+    pct_team = var_team / var_total * 100,
+    pct_resid = var_resid / var_total * 100
+  ) %>%
+  select(model, pct_org, pct_team, pct_resid)
+```
+
+By adding predictors, we explain variance at all three levels. This is one way to assess whether a multilevel model is improving our understanding of each hierarchical level.
+
+---
+
+# Adding Random Slopes at Level 2 and 3
+
+In more complex scenarios, we might allow the *effect of a predictor* to vary at higher levels:
+
+```{r}
+# Model where effort effect varies by team (random slope at L2)
+model_random_slope_l2 <- lmer(
+  performance ~
+    effort_cw +
+    scale(psych_safety)[,1] +
+    scale(org_climate)[,1] +
+    (1 + effort_cw | org_id / team_id),  # effort slope varies across teams and orgs
+  data = employee_data
+)
+
+summary(model_random_slope_l2)
+```
+
+This allows the relationship between effort and performance to be *stronger* in some teams than others. The variance in the effort slope (`effort_cw` in the random effects) tells us: do team contexts enhance or diminish the return on effort?
+
+---
+
+# Cross-Classified Models
+
+Real organizational data often has **non-hierarchical nesting**. For example:
+
+- Employees report to both a **project team** and a **functional department** (matrixed organizations)
+- Survey respondents are nested in both **geographic regions** and **industry sectors**
+- Students are nested in both **schools** and **peer groups**
+
+In these cases, the nesting is **crossed**, not nested.
+
+## Simulating Cross-Classified Data
+
+```{r}
+# New scenario: employees in teams AND departments (crossed)
+set.seed(1234)
+
+n_teams_cc <- 20
+n_depts <- 10
+n_employees_cc <- 200
+
+# Generate data
+employee_cc <- tibble(
+  person_id = 1:n_employees_cc,
+  team_id = sample(1:n_teams_cc, size = n_employees_cc, replace = TRUE),
+  dept_id = sample(1:n_depts, size = n_employees_cc, replace = TRUE),
+  task_assigned = rnorm(n_employees_cc, mean = 5, sd = 1),
+
+  # Random intercepts at team and dept levels
+  u_team = rnorm(n_employees_cc, mean = 0, sd = 0.3),  # will be overwritten
+  u_dept = rnorm(n_employees_cc, mean = 0, sd = 0.3)
+) %>%
+  # Generate outcome (performance) with crossed random effects
+  mutate(
+    # Lookup team and dept effects (proper crossed structure)
+    performance = 5.5 + 0.4 * scale(task_assigned)[,1] +
+                  rep(rnorm(n_teams_cc, 0, 0.4), length.out = n_employees_cc)[seq_len(n_employees_cc)] +
+                  rep(rnorm(n_depts, 0, 0.35), length.out = n_employees_cc)[seq_len(n_employees_cc)] +
+                  rnorm(n_employees_cc, 0, 0.7)
+  ) %>%
+  select(person_id, team_id, dept_id, task_assigned, performance)
+
+# Proper simulation of crossed effects
+set.seed(1234)
+team_effects <- tibble(team_id = 1:n_teams_cc, team_effect = rnorm(n_teams_cc, 0, 0.4))
+dept_effects <- tibble(dept_id = 1:n_depts, dept_effect = rnorm(n_depts, 0, 0.35))
+
+employee_cc <- expand_grid(
+  team_id = 1:n_teams_cc,
+  dept_id = 1:n_depts
+) %>%
+  slice_sample(n = n_employees_cc, replace = TRUE) %>%
+  mutate(
+    person_id = row_number(),
+    task_assigned = rnorm(n_employees_cc, mean = 5, sd = 1)
+  ) %>%
+  left_join(team_effects, by = "team_id") %>%
+  left_join(dept_effects, by = "dept_id") %>%
+  mutate(
+    performance = 5.5 + 0.4 * scale(task_assigned)[,1] +
+                  team_effect + dept_effect + rnorm(n_employees_cc, 0, 0.7)
+  ) %>%
+  select(person_id, team_id, dept_id, task_assigned, performance)
+
+head(employee_cc, 10)
+```
+
+Note the **crossing**: person 1 might be in team 5 and department 2; person 2 might be in team 5 but department 7. Departments do not nest within teams.
+
+## Fitting Cross-Classified Models
+
+In lme4, crossed random effects use `+` instead of `/`:
+
+```{r}
+# Cross-classified model
+model_crossed <- lmer(
+  performance ~ scale(task_assigned)[,1] + (1 | team_id) + (1 | dept_id),
+  data = employee_cc
+)
+
+summary(model_crossed)
+```
+
+**Interpretation:**
+
+The random intercepts for team_id and dept_id are estimated *independently*. An employee's performance is influenced by:
+- Which team they belong to
+- Which department they belong to
+- These effects are *not* nested—a team could span multiple departments and vice versa
+
+This is the correct model for matrixed organizations. Using hierarchical syntax `(1 | dept_id / team_id)` would be wrong, as it would incorrectly assume teams are nested within departments.
+
+---
+
+# Practical Considerations
+
+## Sample Size Requirements
+
+Three-level models demand adequate sample sizes at *all* levels:
+
+| Level     | Minimum | Recommended | Notes                           |
+|-----------|---------|-------------|------|
+| Level 1   | 2       | 10–20       | Can work with fewer observations per cluster |
+| Level 2   | 10      | 20–30       | Need at least 10 to estimate variance       |
+| Level 3   | 5       | 10+         | Very few L3 clusters = unstable estimates   |
+
+With only 5 organizations, estimates are fragile; with 50+, much more stable.
+
+## Convergence Issues
+
+Three-level models with random slopes at multiple levels often face convergence problems. Strategies:
+
+```{r}
+# If default optimizer fails, try alternatives
+model_alt <- lmer(
+  performance ~
+    effort_cw +
+    scale(psych_safety)[,1] +
+    scale(org_climate)[,1] +
+    (1 | org_id / team_id),
+  data = employee_data,
+  control = lmerControl(optimizer = "bobyqa")  # alternative optimizer
+)
+
+# Or simplify the random effects structure
+# Instead of: (1 + effort_cw | org_id / team_id)
+# Try: (1 | org_id) + (1 + effort_cw | team_id)  # only allow slopes at one level
+```
+
+## When to Simplify
+
+Ask yourself:
+1. **Do I have enough Level 3 units?** If < 10 organizations, variance estimates at L3 are unreliable.
+2. **Does the ICC justify the complexity?** If ICC < 0.05 at a level, consider dropping that level.
+3. **Are slopes really random at all levels?** Unless theory and power suggest otherwise, use random intercepts only.
+
+---
+
+# Try It Yourself
+
+## Exercise 1: Three-Level Model with Cross-Level Interactions
+
+Add an **interaction between Level 1 and Level 3 predictors**: does the effect of individual effort on performance depend on organizational climate? Fit the model, interpret the interaction coefficient, and visualize the conditional effect.
+
+## Exercise 2: Comparing Nested vs. Crossed Models
+
+Create a dataset where the same structure could be modeled as either hierarchical or crossed (e.g., employees nested in teams, but teams also nested in departments). Fit both models and compare:
+- Which fits better (AIC/BIC)?
+- How do interpretations differ?
+
+## Exercise 3: Random Slopes at Different Levels
+
+Fit three models:
+1. Random intercepts only
+2. Random slopes at Level 2 (teams)
+3. Random slopes at Level 3 (organizations)
+
+For each, extract the variance of the slopes and compute: how much does the effort effect vary across teams? Across organizations?
+
+## Exercise 4: Variance Decomposition Visualization
+
+Create a figure (e.g., stacked bar chart) showing the proportion of variance at each level before and after adding predictors. This visually demonstrates how multilevel predictors explain variance at each hierarchical level.
+

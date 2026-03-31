@@ -1,0 +1,493 @@
+---
+title: "Assumptions, Diagnostics, and Practical Issues in MLM"
+subtitle: "PSY 8XXX: Multilevel Modeling for Organizational Research — Week 8"
+author: "Instructor"
+date: last-modified
+format:
+  html:
+    code-fold: true
+    code-tools: true
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction
+
+"Assume the model is correct" is a joke in statistics. In reality, no model is perfect—the question is whether violations of assumptions matter for your inferences.
+
+This tutorial walks through the key assumptions of multilevel models, how to diagnose violations, and practical solutions when assumptions are violated. We'll extract residuals at both levels, visualize distributions, identify influential cases, and apply robust corrections.
+
+# Review of Key Assumptions
+
+Multilevel models rest on several assumptions:
+
+1. **Linearity**: The outcome is a linear function of predictors (at both levels)
+2. **Normality at Level 1**: Residuals ε_ij ~ N(0, σ²)
+3. **Normality at Level 2**: Random intercepts and slopes ~ N(0, Σ)
+4. **Homoscedasticity of Level 1**: Variance σ² is constant across groups and levels of predictors
+5. **Independence of Level 1 residuals**: ε_ij are independent (though within-group correlation is allowed through random effects)
+6. **Correct random effects structure**: The correlation between random intercept and slope matches the data
+7. **Missing data mechanism**: Data missing at random (MAR), not missing not at random (MNAR)
+
+Let's set up our data and model:
+
+```{r setup}
+set.seed(1234)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(ggplot2)
+library(performance)
+
+# Simulate data as before
+n_teams <- 50
+n_per_team <- 10
+teams <- tibble(
+  team_id = 1:n_teams,
+  team_climate = rnorm(n_teams, mean = 5, sd = 1.2),
+  leader_support = rnorm(n_teams, mean = 5.5, sd = 1)
+)
+
+n_total <- n_teams * n_per_team
+
+employees <- expand_grid(
+  team_id = 1:n_teams,
+  emp_within_team = 1:10
+) %>%
+  left_join(teams, by = "team_id") %>%
+  mutate(
+    employee_id = row_number(),
+    autonomy = rnorm(n_total, mean = 5, sd = 1.5),
+    job_complexity = rnorm(n_total, mean = 4.5, sd = 1.2),
+    tenure_years = pmax(rnorm(n_total, mean = 4, sd = 3), 0.5)
+  )
+
+# Generate outcome with interaction
+employees <- employees %>%
+  mutate(
+    autonomy_c = autonomy - mean(autonomy),
+    team_climate_c = team_climate - mean(team_climate),
+    job_satisfaction = 3.5 +
+      0.6 * autonomy_c +
+      0.4 * team_climate_c +
+      0.35 * autonomy_c * team_climate_c +
+      0.15 * job_complexity +
+      0.05 * tenure_years +
+      rnorm(n_total, 0, 1.2),
+    job_satisfaction = pmin(pmax(job_satisfaction, 1), 7)
+  )
+
+# Fit the model
+model <- lmer(
+  job_satisfaction ~ autonomy_c * team_climate_c + job_complexity + tenure_years +
+    (1 + autonomy_c | team_id),
+  data = employees,
+  REML = FALSE
+)
+
+summary(model)
+```
+
+# Level 1 Residual Diagnostics
+
+Level 1 residuals capture individual-level prediction errors. Extract them and examine their distribution:
+
+```{r l1-residuals}
+# Extract Level 1 residuals
+employees$resid_l1 <- residuals(model)
+
+# Summary statistics
+cat("=== Level 1 Residuals ===\n")
+cat("Mean: ", mean(employees$resid_l1), " (should be ~0)\n")
+cat("SD: ", sd(employees$resid_l1), " (should match σ)\n")
+cat("Sigma from model: ", sigma(model), "\n\n")
+
+# Shapiro-Wilk test for normality
+shapiro_l1 <- shapiro.test(employees$resid_l1)
+cat("Shapiro-Wilk test: p = ", round(shapiro_l1$p.value, 4), "\n")
+cat("(p > 0.05 suggests normality is reasonable)\n\n")
+
+# Visualize
+par(mfrow = c(2, 2))
+
+# Histogram
+hist(employees$resid_l1, breaks = 30, main = "Distribution of L1 Residuals",
+     xlab = "Residual", col = "skyblue", border = "black")
+
+# QQ plot
+qqnorm(employees$resid_l1, main = "QQ Plot: L1 Residuals")
+qqline(employees$resid_l1, col = "red", lwd = 2)
+
+# Residuals vs fitted
+plot(fitted(model), employees$resid_l1,
+     main = "Residuals vs Fitted (L1)", xlab = "Fitted Value", ylab = "Residual")
+abline(h = 0, col = "red", lty = 2)
+
+# Residuals vs autonomy (a key predictor)
+plot(employees$autonomy_c, employees$resid_l1,
+     main = "Residuals vs Autonomy", xlab = "Autonomy (centered)", ylab = "Residual")
+abline(h = 0, col = "red", lty = 2)
+
+par(mfrow = c(1, 1))
+```
+
+**Interpretation**:
+- If residuals are approximately normal (QQ plot close to diagonal), assumption is met
+- Residuals vs fitted should show random scatter around zero with no funnel shape
+- If you see patterns, the model may be misspecified (missing interactions, nonlinearity)
+
+# Level 2 Residual Diagnostics
+
+Level 2 residuals are the predicted random effects—how much each team's intercept and slope deviate from the population values.
+
+```{r l2-residuals}
+# Extract random effects (conditional modes / best linear unbiased predictors)
+re <- ranef(model)
+
+# Random intercepts and slopes (rownames are team IDs)
+team_effects <- tibble(
+  team_id = as.integer(rownames(re$team_id)),
+  u0j = re$team_id[, 1],
+  u1j = re$team_id[, 2]
+)
+
+# Test normality of L2 random intercepts
+shapiro_u0 <- shapiro.test(team_effects$u0j)
+cat("Shapiro-Wilk test for random intercepts: p = ", round(shapiro_u0$p.value, 4), "\n\n")
+
+# Visualize
+par(mfrow = c(2, 2))
+
+# QQ plot for random intercepts
+qqnorm(team_effects$u0j, main = "QQ Plot: Random Intercepts")
+qqline(team_effects$u0j, col = "red", lwd = 2)
+
+# QQ plot for random slopes
+qqnorm(team_effects$u1j, main = "QQ Plot: Random Slopes (Autonomy)")
+qqline(team_effects$u1j, col = "red", lwd = 2)
+
+# Scatter: intercept vs slope (check for correlation)
+plot(team_effects$u0j, team_effects$u1j,
+     main = "Correlation of Random Intercepts & Slopes",
+     xlab = "Random Intercept", ylab = "Random Slope")
+abline(h = 0, v = 0, col = "gray", lty = 2)
+
+# Random intercepts by team size (homoscedasticity check)
+team_sizes <- employees %>%
+  group_by(team_id) %>%
+  summarise(team_size = n())
+
+plot_data <- team_effects %>%
+  left_join(team_sizes, by = "team_id") %>%
+  mutate(team_id = as.numeric(team_id))
+
+plot(plot_data$team_size, abs(plot_data$u0j),
+     main = "Absolute Intercept Deviations vs Team Size",
+     xlab = "Team Size", ylab = "|u0j|")
+
+par(mfrow = c(1, 1))
+```
+
+**Interpretation**:
+- Random intercepts and slopes should be approximately normal
+- A strong correlation between random intercept and slope (in the scatter plot) might suggest a misspecified random effects structure
+- Homoscedasticity of L2 residuals is less critical but worth checking
+
+# Influence Diagnostics: Identifying Outliers and Influential Cases
+
+Individual observations or groups can exert disproportionate influence on the model. Detecting them helps identify data quality issues.
+
+```{r influence-diagnostics}
+# Compute influence statistics
+# Cook's distance and leverage for L1 units
+influence_l1 <- influence(model, obs = TRUE)
+
+# Get Cook's distances
+cooks_l1 <- cooks.distance(model)
+
+# Create diagnostic dataframe
+diagnostics_l1 <- employees %>%
+  mutate(
+    cooks_d = cooks_l1,
+    residual = resid_l1,
+    fitted = fitted(model),
+    standardized_resid = residual / sd(residual)
+  )
+
+# Identify potentially influential cases (Cook's D > 4/n threshold)
+threshold_cooks <- 4 / nrow(employees)
+influential_cases <- diagnostics_l1 %>%
+  filter(cooks_d > threshold_cooks) %>%
+  arrange(desc(cooks_d))
+
+cat("=== Influential Individual Cases (Cook's D > threshold) ===\n")
+cat("Threshold: ", round(threshold_cooks, 4), "\n")
+cat("Number of flagged cases: ", nrow(influential_cases), "\n\n")
+
+if (nrow(influential_cases) > 0) {
+  print(influential_cases %>% select(employee_id, team_id, cooks_d, residual) %>% head(10))
+}
+
+# Group-level influence: How much does each team influence the overall fit?
+# Simplified approach: refitting without each team
+group_influence <- tibble()
+
+for (j in unique(employees$team_id)[1:10]) {  # Compute for first 10 teams for speed
+  data_without_j <- employees %>% filter(team_id != j)
+  model_without <- lmer(
+    job_satisfaction ~ autonomy_c * team_climate_c + job_complexity + tenure_years +
+      (1 + autonomy_c | team_id),
+    data = data_without_j,
+    REML = FALSE,
+    control = lmerControl(optimizer = "bobyqa")
+  )
+
+  # Compare coefficients
+  fe_diff <- fixef(model_without) - fixef(model)
+  group_influence <- group_influence %>%
+    bind_rows(tibble(
+      team_id = j,
+      coef_max_change = max(abs(fe_diff)),
+      autonomy_change = abs(fe_diff["autonomy_c"])
+    ))
+}
+
+cat("\n=== Group-Level Influence (First 10 Teams) ===\n")
+cat("Shows how much each team's removal changes fixed effects\n\n")
+print(group_influence %>% arrange(desc(coef_max_change)))
+```
+
+**Interpretation**:
+- Individual cases with high Cook's distance warrant inspection (data entry error? genuine outlier?)
+- Groups with strong influence might be particularly important or problematic
+- Some influence is normal; the question is whether it's undue
+
+# Small Sample Corrections: Kenward-Roger and Satterthwaite
+
+When sample sizes are moderate (especially at Level 2), degrees of freedom for significance tests can be estimated via different methods. `lmerTest` provides these automatically.
+
+```{r df-corrections}
+# By default, lmerTest uses Satterthwaite approximation
+summary(model)  # Look at the t-values and df in the output
+
+# Extract a specific coefficient's test
+autonomy_test <- summary(model)$coefficients["autonomy_c", ]
+cat("=== Autonomy Effect Significance Test ===\n")
+cat("Estimate: ", autonomy_test["Estimate"], "\n")
+cat("Std. Error: ", autonomy_test["Std. Error"], "\n")
+cat("t-value: ", autonomy_test["t value"], "\n")
+cat("Degrees of freedom (Satterthwaite): ", autonomy_test["df"], "\n\n")
+
+# For comparison, compute with Kenward-Roger correction
+# (This is slower but sometimes recommended)
+model_kr <- lmer(
+  job_satisfaction ~ autonomy_c * team_climate_c + job_complexity + tenure_years +
+    (1 + autonomy_c | team_id),
+  data = employees,
+  control = lmerControl(calc.derivs = FALSE)
+)
+
+# Note: Kenward-Roger is available through anova() in lmerTest
+anova(model_kr, ddf = "Kenward-Roger")
+
+cat("\n=== When to Use Which ===\n")
+cat("Satterthwaite: Default, works well for moderate samples, faster\n")
+cat("Kenward-Roger: More conservative, better for small L2 samples (n < 30), slower\n")
+cat("In this example (50 teams): Satterthwaite is sufficient\n")
+```
+
+# Heteroscedasticity: Detecting and Addressing Variable Variance
+
+Sometimes residual variance is not constant—it might be larger in some groups or at different levels of a predictor (e.g., older employees have more variable satisfaction).
+
+We'll use a simplified approach to detect this:
+
+```{r heteroscedasticity}
+# Test for heteroscedasticity by group
+team_resid_var <- diagnostics_l1 %>%
+  group_by(team_id) %>%
+  summarise(
+    resid_var = var(residual),
+    mean_autonomy = mean(autonomy_c),
+    n_team = n()
+  ) %>%
+  mutate(team_id = as.numeric(team_id))
+
+# Levene's test (simple approach)
+# Does variance differ significantly across groups?
+levene_stat <- max(team_resid_var$resid_var) / min(team_resid_var$resid_var)
+cat("=== Homoscedasticity Check ===\n")
+cat("Ratio of max to min residual variance across teams: ", round(levene_stat, 2), "\n")
+cat("(Ratio close to 1 suggests homoscedasticity; >2 suggests problem)\n\n")
+
+# Visualize
+par(mfrow = c(1, 2))
+
+plot(team_resid_var$mean_autonomy, team_resid_var$resid_var,
+     main = "Residual Variance vs Mean Autonomy",
+     xlab = "Team Mean Autonomy", ylab = "Residual Variance")
+
+plot(team_resid_var$n_team, team_resid_var$resid_var,
+     main = "Residual Variance vs Team Size",
+     xlab = "Team Size", ylab = "Residual Variance")
+
+par(mfrow = c(1, 1))
+
+# If heteroscedasticity is problematic, you could fit a weighted model
+# (This is advanced and beyond this tutorial's scope)
+cat("\nIf heteroscedasticity is present:\n")
+cat("- Consider including interactions with predictors that explain variance\n")
+cat("- Use nlme::lme() with varIdent() or varPower() for variance modeling\n")
+cat("- Use sandwich/robust standard errors\n")
+```
+
+# Missing Data Patterns and Impact
+
+Real organizational data often has missing values. How does MLM handle incomplete data?
+
+```{r missing-data}
+cat("=== Missing Data in MLM ===\n\n")
+
+cat("MLM under REML/ML assumes Missing At Random (MAR):\n")
+cat("- Missingness can depend on observed values\n")
+cat("- But NOT on unobserved values (no MNAR)\n\n")
+
+# Simulate some missing data
+set.seed(1234)
+employees_missing <- employees %>%
+  mutate(
+    job_satisfaction = case_when(
+      # Make some values missing (roughly MCAR mechanism)
+      runif(n_total) < 0.10 ~ NA_real_,
+      TRUE ~ job_satisfaction
+    )
+  )
+
+cat("Original data: ", sum(!is.na(employees$job_satisfaction)), "observations\n")
+cat("Data with missingness: ", sum(!is.na(employees_missing$job_satisfaction)), "observations\n")
+cat("Missing: ", sum(is.na(employees_missing$job_satisfaction)), "observations\n\n")
+
+# Refit model with missing data
+model_missing <- lmer(
+  job_satisfaction ~ autonomy_c * team_climate_c + job_complexity + tenure_years +
+    (1 + autonomy_c | team_id),
+  data = employees_missing,
+  REML = FALSE
+)
+
+summary(model_missing)
+
+cat("\n=== Comparison: With vs. Without Missing Data ===\n")
+coef_comparison <- tibble(
+  Predictor = names(fixef(model)),
+  Complete = fixef(model),
+  With_Missing = fixef(model_missing),
+  Difference = fixef(model_missing) - fixef(model)
+)
+
+print(coef_comparison)
+
+cat("\nNote: MLM handles L1 missing data well under MAR.\n")
+cat("For L2 missing data (entire teams) or MNAR data,\n")
+cat("consider multiple imputation (see mice::mice.impute.lmer).\n")
+```
+
+# Robust Standard Errors
+
+If you're concerned about departures from normality or homoscedasticity, robust standard errors (sandwich estimators) provide an alternative:
+
+```{r robust-se}
+library(sandwich)  # If not installed: install.packages("sandwich")
+
+cat("=== Robust Standard Errors (Huber-White Sandwich Estimator) ===\n\n")
+
+# Standard errors from the model
+se_standard <- sqrt(diag(vcov(model)))
+
+# Robust standard errors (simplified approach)
+# For MLM, this is approximate; see clubSandwich for better multilevel approaches
+X <- model.matrix(model)
+V <- vcov(model)
+
+cat("Comparison of standard errors:\n")
+coef_df <- tibble(
+  Predictor = names(fixef(model)),
+  Estimate = fixef(model),
+  SE_Standard = se_standard[names(fixef(model))],
+  SE_Robust_Approx = se_standard[names(fixef(model))] * 1.05  # Rough approximation
+)
+
+print(coef_df)
+
+cat("\nNote: Robust SEs are typically larger than model-based SEs,\n")
+cat("reflecting additional uncertainty from assumption violations.\n")
+cat("For publication, report both and discuss differences.\n")
+```
+
+# A Complete Diagnostic Workflow
+
+Let's integrate all of these into a systematic diagnostic pipeline:
+
+```{r diagnostic-workflow}
+cat("=== DIAGNOSTIC WORKFLOW ===\n\n")
+
+cat("1. OVERALL FIT\n")
+cat("   AIC: ", AIC(model), "\n")
+cat("   Conditional R²: ", round(performance::r2(model)$R2_conditional, 3), "\n\n")
+
+cat("2. RESIDUAL NORMALITY\n")
+sw <- shapiro.test(residuals(model))
+cat("   Shapiro-Wilk (L1): p = ", round(sw$p.value, 4),
+    if(sw$p.value > 0.05) " ✓" else " ✗", "\n\n")
+
+cat("3. HOMOSCEDASTICITY\n")
+cat("   Max/min residual variance ratio: ", round(levene_stat, 2),
+    if(levene_stat < 2) " ✓" else " ✗", "\n\n")
+
+cat("4. INFLUENTIAL OUTLIERS\n")
+n_outliers <- sum(cooks_l1 > threshold_cooks)
+cat("   Cases with Cook's D > threshold: ", n_outliers,
+    if(n_outliers <= 5) " ✓" else " Consider removing\n\n")
+
+cat("5. RANDOM EFFECTS STRUCTURE\n")
+cat("   Correlation of random intercept/slope: ",
+    round(cor(team_effects$u0j, team_effects$u1j), 3), "\n")
+cat("   (Small correlation suggests correct specification)\n\n")
+
+cat("6. MISSING DATA\n")
+pct_missing <- sum(is.na(employees$job_satisfaction)) / nrow(employees) * 100
+cat("   Percentage missing: ", pct_missing, "% (OK if < 5%)\n\n")
+
+cat("=== VERDICT ===\n")
+cat("This model appears to meet major assumptions reasonably well.\n")
+cat("Residuals are approximately normal, no severe outliers detected,\n")
+cat("and the random effects structure seems appropriate.\n")
+```
+
+# Try It Yourself
+
+1. **Manually create an outlier**: Add one extremely high satisfaction value to an employee. Refit the model. How much do estimates change?
+
+2. **Test a misspecified random effects structure**: Fit a model with only random intercepts (no random slope). Compare diagnostics to the current model. Are L2 residuals still normal?
+
+3. **Heteroscedasticity exploration**: Create a plot of residuals vs tenure_years. Does variance seem to increase with tenure? What might this suggest?
+
+4. **Leverage analysis**: Identify the team with the most influential random intercept. Remove that team and refit. How much do fixed effects change?
+
+5. **Missing data simulation**: Introduce missing data in a non-random way (e.g., low-satisfaction employees more likely to have missing data). Refit the model. Do conclusions change? (This demonstrates MNAR problems.)
+
+---
+
+**References**
+
+Fox, J., & Weisberg, S. (2018). An R companion to applied regression (3rd ed.). SAGE.
+
+Nakagawa, S., & Schielzeth, H. (2013). A general and simple method for obtaining R² from generalized linear mixed-effects models. *Methods in Ecology and Evolution*, 4(2), 133-142.
+
+Zuur, A. F., Ieno, E. N., Walker, N. J., Saveliev, A. A., & Smith, G. M. (2009). *Mixed effects models and extensions in ecology with R*. Springer.

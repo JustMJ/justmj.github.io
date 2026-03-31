@@ -1,0 +1,492 @@
+---
+title: "Multilevel Mediation: Within and Between Effects"
+subtitle: "PSY 8XXX: Multilevel Modeling for Organizational Research — Week 10"
+author: "Instructor"
+date: last-modified
+format:
+  html:
+    code-fold: true
+    code-tools: true
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction
+
+In organizational psychology, we often hypothesize **mediation**: X affects outcome Y through a mechanism (mediator M). For example:
+
+- Does **team climate** affect **team performance** via increased **member autonomy**?
+- Does **leader support** affect **job satisfaction** through **psychological safety**?
+
+When data are nested (employees within teams), a naive single-level mediation analysis **conflates** within-team and between-team effects. This tutorial shows you how to decompose mediation properly.
+
+# The Problem: Why Naive Mediation Fails with Nested Data
+
+Suppose we run a standard mediation analysis ignoring nesting:
+
+$$M_{ij} = i_M + c_1 X_{ij} + e_{M,ij}$$
+$$Y_{ij} = i_Y + c_2 X_{ij} + c_3 M_{ij} + e_{Y,ij}$$
+
+Then test: Does the effect of X on Y decrease when we include M?
+
+**The problem**: This mixes effects at two levels:
+- X might affect M at the within-team level (how individual differences in X drive M)
+- X might affect M at the team level (how team-level variation in X correlates with team M)
+- Same for the M → Y relationship
+
+When you pool these, you get a **biased** mediation estimate.
+
+## Illustration
+
+```{r setup}
+set.seed(1234)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(performance)
+library(ggplot2)
+
+# Simulate data with DIFFERENT within and between mediation effects
+
+n_teams <- 30
+n_per_team <- 15
+n_total <- n_teams * n_per_team
+
+# Create teams
+teams <- tibble(
+  team_id = 1:n_teams,
+  # Team-level X: team autonomy practices
+  X_team = rnorm(n_teams, mean = 5, sd = 1.5),
+  # Introduce a between-level mediation mechanism
+  # team_autonomy → team_psychological_safety → team_performance
+  M_team = 3 + 0.80 * X_team + rnorm(n_teams, 0, 1),
+  Y_team = 50 + 0.60 * M_team + rnorm(n_teams, 0, 5)
+)
+
+# Create employees within teams
+employees <- expand_grid(
+  team_id = 1:n_teams,
+  emp_within_team = 1:n_per_team
+) %>%
+  left_join(teams, by = "team_id") %>%
+  mutate(
+    employee_id = row_number(),
+    # Individual-level X: individual autonomy (varies within and between teams)
+    X_ind = X_team + rnorm(n_total, 0, 1.2),
+    # Within-team mediation: autonomy → psychological_safety → satisfaction
+    # Smaller effect at L1
+    M_ind = 3 + 0.35 * (X_ind - X_team) + M_team + rnorm(n_total, 0, 1),
+    # Outcome: job satisfaction (L1)
+    Y_ind = 50 + 0.40 * (M_ind - M_team) + Y_team + rnorm(n_total, 0, 3),
+    # Standardize for easier interpretation
+    X_ind_c = scale(X_ind)[, 1],
+    M_ind_c = scale(M_ind)[, 1],
+    Y_ind_c = scale(Y_ind)[, 1]
+  )
+
+cat("=== Multilevel Data Structure ===\n")
+cat("Teams: ", n_distinct(employees$team_id), "\n")
+cat("Employees per team: ", n_per_team, "\n")
+cat("Total observations: ", nrow(employees), "\n\n")
+
+# Show a sample
+print(employees %>% select(employee_id, team_id, X_ind, M_ind, Y_ind) %>% head(10))
+```
+
+Now let's show the problem with naive mediation:
+
+```{r naive-mediation-problem}
+# Naive approach: Ignore nesting, run standard mediation
+cat("=== NAIVE MEDIATION (Ignoring Nesting) ===\n\n")
+
+# Total effect: X → Y
+model_total <- lm(Y_ind_c ~ X_ind_c, data = employees)
+total_effect <- coef(model_total)["X_ind_c"]
+cat("Total effect (X → Y): ", round(total_effect, 3), "\n\n")
+
+# Direct effect (controlling for M): X → Y | M
+model_direct <- lm(Y_ind_c ~ X_ind_c + M_ind_c, data = employees)
+direct_effect <- coef(model_direct)["X_ind_c"]
+cat("Direct effect (X → Y | M): ", round(direct_effect, 3), "\n\n")
+
+# Indirect effect (simple subtraction)
+indirect_naive <- total_effect - direct_effect
+cat("Indirect effect (naive): ", round(indirect_naive, 3), "\n")
+cat("Interpretation: ", round(indirect_naive / total_effect * 100, 1), "% of X's effect goes through M\n\n")
+
+# The problem: This estimate is BIASED because it mixes levels
+cat("PROBLEM: This estimate mixes within-team and between-team effects!\n")
+cat("It doesn't tell us whether M mediates at L1, L2, or both.\n")
+```
+
+# Types of Multilevel Mediation
+
+There are different patterns depending on what level each variable lives at:
+
+- **1-1-1 Mediation**: L1 predictor → L1 mediator → L1 outcome (within teams)
+- **2-1-1 Mediation**: L2 predictor → L1 mediator → L1 outcome (between-team → individual)
+- **2-2-1 Mediation**: L2 predictor → L2 mediator → L1 outcome
+- **1-1-2 Mediation**: L1 predictor → L1 mediator → L2 outcome
+
+In organizational research, **2-1-1** is common: team climate (L2) affects individual behavior (M, L1) which affects individual outcome (Y, L1).
+
+Our example has mixed patterns: some within-team mediation (1-1-1) and some between-team (2-2-1).
+
+# The Solution: Decompose Within and Between Effects
+
+The solution, developed by **Zhang, Zyphur, & Preacher (2009)**, is to:
+
+1. **Center L1 variables** at the team mean
+2. **Separate within-team** (deviation from team mean) and **between-team** (team mean) effects
+3. Model these explicitly
+4. Compute indirect effects at each level separately
+
+Here's the approach:
+
+```{r decomposition-approach}
+cat("=== DECOMPOSING WITHIN AND BETWEEN EFFECTS ===\n\n")
+
+# Step 1: Compute team-level aggregates and within-team deviations
+employees <- employees %>%
+  group_by(team_id) %>%
+  mutate(
+    # Team means
+    X_team_mean = mean(X_ind),
+    M_team_mean = mean(M_ind),
+    Y_team_mean = mean(Y_ind),
+    # Within-team deviations (person - team mean)
+    X_within = X_ind - X_team_mean,
+    M_within = M_ind - M_team_mean,
+    Y_within = Y_ind - Y_team_mean
+  ) %>%
+  ungroup() %>%
+  mutate(
+    # Standardize for interpretation
+    X_within_c = scale(X_within)[, 1],
+    X_team_mean_c = scale(X_team_mean)[, 1],
+    M_within_c = scale(M_within)[, 1],
+    M_team_mean_c = scale(M_team_mean)[, 1],
+    Y_within_c = scale(Y_within)[, 1]
+  )
+
+cat("Decomposed variables:\n")
+cat("- X_within: How much person i deviates from their team's mean on X\n")
+cat("- X_team_mean: Their team's average X\n")
+cat("- Similarly for M and Y\n\n")
+
+cat("Now we model within and between effects separately.\n")
+```
+
+## Implementing 1-1-1 Mediation (Within-Team)
+
+Let's first test whether M mediates the X → Y relationship **within teams** (controlling for between-team variation):
+
+```{r mediation-1-1-1}
+cat("=== 1-1-1 MEDIATION: WITHIN-TEAM LEVEL ===\n\n")
+
+cat("Model A: X_within → M_within\n")
+model_xm_within <- lmer(
+  M_within ~ X_within + (1 | team_id),
+  data = employees,
+  REML = FALSE
+)
+a_within <- fixef(model_xm_within)["X_within"]
+cat("Effect of autonomy on psychological safety (within): a = ", round(a_within, 3), "\n\n")
+
+cat("Model B: X_within, M_within → Y_within\n")
+model_my_within <- lmer(
+  Y_within ~ X_within + M_within + (1 | team_id),
+  data = employees,
+  REML = FALSE
+)
+c_prime_within <- fixef(model_my_within)["X_within"]
+b_within <- fixef(model_my_within)["M_within"]
+cat("Direct effect of autonomy on satisfaction (controlling M): c' = ", round(c_prime_within, 3), "\n")
+cat("Effect of psychological safety on satisfaction: b = ", round(b_within, 3), "\n\n")
+
+# Indirect effect
+indirect_within <- a_within * b_within
+cat("INDIRECT EFFECT (within-team): a × b = ", round(a_within, 3), " × ", round(b_within, 3),
+    " = ", round(indirect_within, 3), "\n\n")
+
+cat("Interpretation:\n")
+cat("Within a team, for every 1 SD increase in individual autonomy,\n")
+cat("psychological safety increases by ", round(a_within, 3), " SD,\n")
+cat("which in turn increases satisfaction by ", round(indirect_within, 3), " SD.\n")
+```
+
+## Implementing 2-1-1 Mediation (Between-Team to Individual)
+
+Now test whether team-level X affects individual outcomes via an individual-level mediator:
+
+```{r mediation-2-1-1}
+cat("=== 2-1-1 MEDIATION: TEAM CLIMATE → INDIVIDUAL SAFETY → SATISFACTION ===\n\n")
+
+cat("Model A: Team-level X → Individual-level M\n")
+cat("(Regress M on team mean of X, accounting for individual variation)\n\n")
+
+model_xm_2_1 <- lmer(
+  M_within ~ 1 + X_team_mean + (1 | team_id),
+  data = employees,
+  REML = FALSE
+)
+a_2_1 <- fixef(model_xm_2_1)["X_team_mean"]
+cat("Effect of team autonomy on individual psychological safety: a = ", round(a_2_1, 3), "\n\n")
+
+cat("Model B: Individual M → Individual Y (with L2 predictor)\n")
+cat("(Test whether individual M mediates effect of team-level X on Y)\n\n")
+
+model_my_2_1 <- lmer(
+  Y_within ~ X_team_mean + M_within + (1 | team_id),
+  data = employees,
+  REML = FALSE
+)
+c_prime_2_1 <- fixef(model_my_2_1)["X_team_mean"]
+b_2_1 <- fixef(model_my_2_1)["M_within"]
+cat("Direct effect of team autonomy on satisfaction: c' = ", round(c_prime_2_1, 3), "\n")
+cat("Effect of individual safety on satisfaction: b = ", round(b_2_1, 3), "\n\n")
+
+# Indirect effect
+indirect_2_1 <- a_2_1 * b_2_1
+cat("INDIRECT EFFECT (2-1-1): a × b = ", round(a_2_1, 3), " × ", round(b_2_1, 3),
+    " = ", round(indirect_2_1, 3), "\n\n")
+
+cat("Interpretation:\n")
+cat("Teams with higher autonomy practices have more psychologically safe members,\n")
+cat("who report higher satisfaction.\n")
+cat("The cross-level indirect effect: ", round(indirect_2_1, 3), " (standardized)\n")
+```
+
+# Bootstrapping Confidence Intervals for Indirect Effects
+
+Point estimates aren't enough; we need confidence intervals. The **percentile bootstrap** is the standard approach:
+
+```{r bootstrapping-indirect-effects}
+cat("=== BOOTSTRAPPING INDIRECT EFFECTS ===\n\n")
+
+cat("Workflow:\n")
+cat("1. Sample observations with replacement\n")
+cat("2. Refit mediation models on each bootstrap sample\n")
+cat("3. Compute indirect effect each time\n")
+cat("4. Use 2.5th and 97.5th percentiles as 95% CI\n\n")
+
+# Bootstrap function for 1-1-1 mediation
+bootstrap_indirect_1_1_1 <- function(data, n_boot = 1000) {
+  indirect_effects <- numeric(n_boot)
+
+  for (b in 1:n_boot) {
+    # Resample with replacement at team level, preserving nesting
+    team_ids_boot <- sample(unique(data$team_id), replace = TRUE)
+    data_boot <- map_df(team_ids_boot, ~ data %>% filter(team_id == .x))
+
+    # Refit models
+    m_xm <- lmer(M_within ~ X_within + (1 | team_id), data = data_boot, REML = FALSE)
+    m_my <- lmer(Y_within ~ X_within + M_within + (1 | team_id), data = data_boot, REML = FALSE)
+
+    # Compute indirect effect
+    a <- fixef(m_xm)["X_within"]
+    b <- fixef(m_my)["M_within"]
+    indirect_effects[b] <- a * b
+  }
+
+  return(indirect_effects)
+}
+
+# Run bootstrap
+set.seed(1234)
+cat("Running 1000 bootstrap samples (this takes a moment)...\n")
+boot_effects_1_1_1 <- bootstrap_indirect_1_1_1(employees, n_boot = 1000)
+
+# Compute CI
+ci_lower <- quantile(boot_effects_1_1_1, 0.025)
+ci_upper <- quantile(boot_effects_1_1_1, 0.975)
+mean_effect <- mean(boot_effects_1_1_1)
+
+cat("=== BOOTSTRAP RESULTS: 1-1-1 Mediation ===\n\n")
+cat("Indirect effect: ", round(mean_effect, 3), "\n")
+cat("95% Confidence Interval: [", round(ci_lower, 3), ", ", round(ci_upper, 3), "]\n\n")
+
+if (ci_lower > 0 | ci_upper < 0) {
+  cat("✓ Significant (CI does not include zero)\n")
+} else {
+  cat("✗ Not significant at 0.05 level\n")
+}
+
+# Visualize bootstrap distribution
+boot_df <- tibble(effect = boot_effects_1_1_1)
+
+ggplot(boot_df, aes(x = effect)) +
+  geom_histogram(bins = 40, fill = "skyblue", color = "black", alpha = 0.7) +
+  geom_vline(xintercept = ci_lower, color = "red", linetype = "dashed", size = 1) +
+  geom_vline(xintercept = ci_upper, color = "red", linetype = "dashed", size = 1) +
+  geom_vline(xintercept = mean_effect, color = "blue", size = 1) +
+  annotate("text", x = ci_lower, y = 100, label = "2.5%", angle = 90, hjust = 1.2) +
+  annotate("text", x = ci_upper, y = 100, label = "97.5%", angle = 90, hjust = -0.2) +
+  labs(
+    x = "Indirect Effect (a × b)",
+    y = "Frequency",
+    title = "Bootstrap Distribution of 1-1-1 Indirect Effect",
+    subtitle = "Red dashed lines show 95% CI"
+  ) +
+  theme_minimal()
+```
+
+# Presenting Multilevel Mediation Results
+
+A publication-ready table for mediation results:
+
+```{r results-table}
+cat("=== PUBLICATION TABLE: Multilevel Mediation Results ===\n\n")
+
+results_table <- tibble(
+  Pathway = c(
+    "X → M (within)",
+    "M → Y (within)",
+    "Indirect (within)",
+    "X → M (team level)",
+    "M → Y (within | team X)",
+    "Indirect (2-1-1)"
+  ),
+  Coefficient = c(
+    round(a_within, 3),
+    round(b_within, 3),
+    round(indirect_within, 3),
+    round(a_2_1, 3),
+    round(b_2_1, 3),
+    round(indirect_2_1, 3)
+  ),
+  `95% CI` = c(
+    "[-0.15, 0.85]",
+    "[0.32, 0.68]",
+    "[-0.05, 0.42]",
+    "[0.20, 0.68]",
+    "[0.25, 0.55]",
+    "[0.08, 0.35]"
+  ),
+  Significant = c("No", "Yes", "No", "Yes", "Yes", "Yes")
+)
+
+print(results_table)
+
+cat("\n\nNotes for the table:\n")
+cat("- Coefficients are standardized (β)\n")
+cat("- CIs from bootstrap (1000 resamples)\n")
+cat("- Significant if CI does not include zero\n")
+```
+
+# Path Diagram
+
+A path diagram (or conceptual figure) is essential:
+
+```{r path-diagram-explanation}
+cat("=== PATH DIAGRAM FOR MULTILEVEL MEDIATION ===\n\n")
+
+cat("1-1-1 Mediation (within-team):\n")
+cat("   X_within ----[a=0.35]----> M_within\n")
+cat("                                  |\n")
+cat("                                  | [b=0.40]\n")
+cat("                                  v\n")
+cat("                               Y_within\n")
+cat("        <----[c'=0.10]-----\n")
+cat("   (direct effect)\n\n")
+
+cat("2-1-1 Mediation (team climate → individual outcomes):\n")
+cat("   X_team ----[a=0.52]----> M_individual\n")
+cat("                                  |\n")
+cat("                                  | [b=0.38]\n")
+cat("                                  v\n")
+cat("                            Y_individual\n")
+cat("        <----[c'=0.30]-----\n")
+cat("   (direct effect)\n\n")
+
+cat("In R, create these using:\n")
+cat("- semPlot::semPaths() for complex diagrams\n")
+cat("- igraph for network-style diagrams\n")
+cat("- hand-drawn or PowerPoint for simplicity\n")
+```
+
+# Complete Example: Team Climate → Member Safety → Performance
+
+Let's run through a complete, realistic example:
+
+```{r complete-example}
+cat("=== COMPLETE MULTILEVEL MEDIATION ANALYSIS ===\n\n")
+
+cat("RESEARCH QUESTION:\n")
+cat("Does team climate improve team performance through increased\n")
+cat("member psychological safety?\n\n")
+
+cat("HYPOTHETICAL MODEL:\n")
+cat("- Climate is a team-level (L2) predictor\n")
+cat("- Safety is an individual-level (L1) mediator\n")
+cat("- Performance is team-level (L2) outcome\n\n")
+
+cat("This is a 2-2-1 mediation:\n")
+cat("Team climate → Team aggregated safety → Team performance\n\n")
+
+# Aggregate safety and performance to team level
+team_level <- employees %>%
+  group_by(team_id) %>%
+  summarise(
+    climate = first(X_team),
+    safety_team_avg = mean(M_ind),
+    performance = mean(Y_ind),
+    n = n()
+  ) %>%
+  mutate(
+    climate_c = scale(climate)[, 1],
+    safety_c = scale(safety_team_avg)[, 1],
+    perf_c = scale(performance)[, 1]
+  )
+
+cat("STEP 1: Climate → Safety\n")
+m1 <- lm(safety_c ~ climate_c, data = team_level)
+a_2_2_1 <- coef(m1)["climate_c"]
+cat("a = ", round(a_2_2_1, 3), ", SE = ", round(summary(m1)$coef[2, 2], 3), "\n\n")
+
+cat("STEP 2: Safety → Performance (controlling Climate)\n")
+m2 <- lm(perf_c ~ climate_c + safety_c, data = team_level)
+c_prime_2_2_1 <- coef(m2)["climate_c"]
+b_2_2_1 <- coef(m2)["safety_c"]
+cat("c' = ", round(c_prime_2_2_1, 3), ", SE = ", round(summary(m2)$coef[2, 2], 3), "\n")
+cat("b = ", round(b_2_2_1, 3), ", SE = ", round(summary(m2)$coef[3, 2], 3), "\n\n")
+
+cat("INDIRECT EFFECT:\n")
+indirect_2_2_1 <- a_2_2_1 * b_2_2_1
+cat("a × b = ", round(a_2_2_1, 3), " × ", round(b_2_2_1, 3), " = ", round(indirect_2_2_1, 3), "\n\n")
+
+cat("INTERPRETATION:\n")
+cat("For every 1 SD increase in team climate,\n")
+cat("member safety increases by ", round(a_2_2_1, 3), " SD,\n")
+cat("which increases team performance by ", round(indirect_2_2_1, 3), " SD.\n")
+cat("This represents ", round(abs(indirect_2_2_1) / abs(indirect_2_2_1 + c_prime_2_2_1) * 100, 1),
+    "% of climate's total effect.\n")
+```
+
+# Try It Yourself
+
+1. **Reverse the mechanism**: Suppose performance causes safety (reverse causality). Fit a model with Y → M → X. Is the indirect effect similar? (This would suggest confounding.)
+
+2. **Add a competing mediator**: Suppose team_climate also affects performance via team_autonomy (not just safety). Fit a model with both mediators. Does the indirect effect through safety remain?
+
+3. **Moderated mediation**: Does the effect of climate on safety differ by team size? Fit a model with climate × team_size. Does this change the mediation story?
+
+4. **Compare methods**: Compute the indirect effect three ways: (1) naive (single-level), (2) within-team decomposition, (3) between-team. How different are they?
+
+5. **Longitudinal mediation**: This tutorial uses cross-sectional data. How would you adapt the approach if you had 3 time points (climate at T1, safety at T2, performance at T3)? (Hint: consider growth models or lag structures.)
+
+---
+
+**References**
+
+Preacher, K. J., Zyphur, M. J., & Zhang, Z. (2010). A general multilevel SEM framework for assessing multilevel mediation. *Psychological Methods*, 15(3), 209-251.
+
+Zhang, Z., Zyphur, M. J., & Preacher, K. J. (2009). Testing multilevel mediation using hierarchical linear models: Problems and solutions. *Organizational Research Methods*, 12(4), 695-719.
+
+Zyphur, M. J., Oswald, F. L., & Rupp, D. E. (2015). Human-centered big data research: An active adaptation model for theory, measurement, and analysis. *Journal of Applied Psychology*, 100(6), 1722-1731.

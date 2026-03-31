@@ -1,0 +1,516 @@
+---
+title: "Bayesian Multilevel Modeling and Multilevel Structural Equation Modeling"
+subtitle: "PSY 8XXX: Multilevel Modeling for Organizational Research — Week 14"
+author: "Instructor Name"
+date: last-modified
+format:
+  html:
+    code-fold: true
+    code-tools: true
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction
+
+Frequentist multilevel modeling (via `lmer`) has been our workhorse. But **Bayesian approaches** offer distinct advantages in certain scenarios:
+
+1. **Small Level-2 sample sizes**: With few teams or organizations, Bayesian priors can stabilize estimates.
+2. **Model complexity**: Non-linear models, complex random effect structures, and missing-data mechanisms fit naturally.
+3. **Direct probability statements**: Credible intervals have intuitive interpretation ("given the data and prior, there is 95% probability the parameter lies in this range").
+4. **Hierarchical structure as prior**: The multilevel structure itself provides a natural prior for lower-level parameters.
+
+**Structural Equation Modeling (SEM)** at multiple levels adds another dimension: we can model **measurement error** and **latent variables** that vary across levels. For instance, we might estimate a latent "team climate" at Level 2, or individual-level latent factors with cross-level effects.
+
+This week, we build intuition for Bayesian MLM and introduce multilevel CFA.
+
+---
+
+# Bayesian Estimation: The Core Idea
+
+Bayesian inference combines three components:
+
+$$\text{Posterior} \propto \text{Likelihood} \times \text{Prior}$$
+
+**Intuitively:**
+- **Prior**: our belief about parameters *before* seeing data
+- **Likelihood**: how likely the data are, given parameters
+- **Posterior**: our updated belief *after* observing data
+
+For multilevel data:
+- The **prior for lower-level parameters** often comes from the *higher-level distribution*
+- E.g., the prior on each team's intercept is the organization-level distribution
+- This is automatic in Bayesian MLM
+
+**Why this matters in MLM:**
+- With 5 teams, we have sparse information for estimating team-level variance. Bayesian methods, properly specified, can pool information intelligently.
+- With 500 teams, frequentist and Bayesian approaches converge (priors matter less when data are abundant).
+
+---
+
+# Setting Up brms
+
+The `brms` package ("Bayesian Regression Models using Stan") provides a formula interface similar to `lmer`, but with Bayesian inference:
+
+```{r}
+# Install if needed: install.packages("brms")
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(brms)
+library(tidybayes)
+library(bayesplot)
+
+# Set seed for reproducibility
+set.seed(1234)
+```
+
+We'll use the same data structure as in earlier weeks. Let me create a simplified three-level dataset:
+
+```{r}
+# Simulate data: employees in teams in organizations
+n_orgs <- 8
+n_teams_per_org <- 6
+n_per_team <- 12
+
+n_teams <- n_orgs * n_teams_per_org
+n_total <- n_teams * n_per_team
+
+# Generate data
+org_data <- tibble(
+  org_id = 1:n_orgs,
+  org_climate = rnorm(n_orgs, mean = 5, sd = 1)
+)
+
+team_data <- expand_grid(
+  org_id = 1:n_orgs,
+  team_num = 1:n_teams_per_org
+) %>%
+  mutate(
+    team_id = row_number(),
+    team_safety = rnorm(n_teams, mean = 5, sd = 0.8)
+  ) %>%
+  left_join(org_data, by = "org_id")
+
+employee_data <- expand_grid(
+  team_id = 1:n_teams,
+  emp_num = 1:n_per_team
+) %>%
+  mutate(
+    person_id = row_number(),
+    effort = rnorm(n_total, mean = 5, sd = 1.5)
+  ) %>%
+  left_join(team_data, by = "team_id") %>%
+  mutate(
+    # Outcome: performance
+    # Depends on effort, team safety, org climate
+    performance = 5 +
+      0.35 * scale(effort)[,1] +
+      0.25 * scale(team_safety)[,1] +
+      0.20 * scale(org_climate)[,1] +
+      rnorm(n_total, mean = 0, sd = 0.8)
+  ) %>%
+  select(person_id, team_id, org_id, effort, team_safety, org_climate, performance)
+
+# Quick summary
+head(employee_data, 12)
+```
+
+---
+
+# Fitting a Bayesian Multilevel Model
+
+The `brms` syntax mirrors `lmer`, with formula specification via `bf()`:
+
+```{r, eval = FALSE}
+# Bayesian two-level model with brms
+# Note: eval=FALSE because brms requires Stan compilation, which takes time
+model_bayes_l2 <- brm(
+  formula = bf(performance ~ effort + team_safety + org_climate + (1 | team_id)),
+  data = employee_data,
+  family = gaussian(),
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,
+  seed = 1234,
+  verbose = FALSE
+)
+
+summary(model_bayes_l2)
+```
+
+**Key parameters:**
+- **chains**: number of MCMC chains (typically 4, samples in parallel)
+- **iter**: total iterations per chain
+- **warmup**: "burn-in" iterations discarded before inference
+- **cores**: parallel processing
+
+When you run this locally, Stan will compile and sample from the posterior. The output resembles frequentist models but with additional diagnostics.
+
+**Note**: This tutorial sets `eval=FALSE` for brms chunks since Stan compilation requires significant computation. Run these on your own machine.
+
+---
+
+# Specifying Priors
+
+By default, `brms` uses weak/non-informative priors. But we can specify priors directly:
+
+```{r, eval = FALSE}
+# Check default priors
+default_priors <- prior_summary(model_bayes_l2)
+
+# Specify custom priors
+priors_custom <- c(
+  # Priors on fixed effects
+  prior(normal(5, 2), class = "b", coef = "effort"),           # effort effect
+  prior(normal(0, 1), class = "b", coef = "team_safety"),      # team safety effect
+  prior(normal(0, 1), class = "b", coef = "org_climate"),      # org climate effect
+  # Prior on intercept
+  prior(normal(5, 1), class = "Intercept"),
+  # Prior on standard deviations
+  prior(exponential(1), class = "sigma"),                       # residual SD
+  prior(exponential(1), class = "sd")                           # random effect SDs
+)
+
+# Fit with custom priors
+model_bayes_priors <- brm(
+  formula = bf(performance ~ effort + team_safety + org_climate + (1 | team_id)),
+  data = employee_data,
+  prior = priors_custom,
+  family = gaussian(),
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,
+  seed = 1234
+)
+
+summary(model_bayes_priors)
+```
+
+**Prior choices:**
+
+- **`normal(5, 2)` on effort**: we *weakly expect* the effort effect to be around 0.3–0.4 (on a scale of 1–10), but allow wide uncertainty
+- **`normal(0, 1)` on other effects**: centered at 0, allowing both positive and negative effects
+- **`exponential(1)` on SDs**: ensures positive standard deviations, with most prior mass on moderate values
+
+These are **weakly informative priors**: they don't dominate the likelihood but express reasonable domain knowledge.
+
+---
+
+# Interpreting Bayesian Output
+
+Key differences from frequentist output:
+
+```{r, eval = FALSE}
+# Extract posterior samples
+posterior_samples <- as_draws_df(model_bayes_l2)
+
+# Posterior means and credible intervals
+posterior_summary(model_bayes_l2)
+```
+
+**Output includes:**
+
+- **Estimate**: posterior mean
+- **Est.Error**: posterior standard deviation
+- **Q2.5, Q97.5**: 95% credible interval (quantiles of posterior)
+- **Rhat**: diagnostic convergence statistic (should be < 1.01)
+- **Bulk_ESS / Tail_ESS**: effective sample size (higher is better)
+
+**Interpretation:**
+
+- A **credible interval** for the effort effect of [0.30, 0.40] means: "Given the data and prior, we believe the true effect lies in this range with 95% probability."
+- Compare to frequentist confidence interval: "If we repeated the study many times, 95% of confidence intervals would contain the true parameter" (subtly different framing).
+
+---
+
+# Visualizing Posterior Distributions
+
+One advantage of Bayesian methods is rich posterior visualization:
+
+```{r, eval = FALSE}
+# Posterior plots
+library(bayesplot)
+
+# Plot posterior distributions for fixed effects
+plot(model_bayes_l2)
+
+# More detailed: extract and plot manually
+posterior_samples %>%
+  select(starts_with("b_")) %>%
+  pivot_longer(everything()) %>%
+  ggplot(aes(x = value, fill = name)) +
+  geom_density(alpha = 0.6) +
+  facet_wrap(~name, scales = "free") +
+  labs(title = "Posterior Distributions of Fixed Effects",
+       x = "Parameter Value",
+       y = "Posterior Density") +
+  theme_minimal()
+
+# Posterior predictive checks: do samples from posterior match observed data?
+pp_check(model_bayes_l2)  # overlay replicated data on observed
+```
+
+These visualizations help assess:
+1. **Convergence**: are chains mixing well?
+2. **Posterior predictive validity**: do the model's predictions match the observed data?
+
+---
+
+# Model Comparison: LOO and WAIC
+
+Bayesian model comparison uses **Leave-One-Out Cross-Validation (LOO)** or **WAIC** (Widely Applicable Information Criterion):
+
+```{r, eval = FALSE}
+# Add LOO criterion to models
+model_bayes_l2 <- add_criterion(model_bayes_l2, "loo")
+model_bayes_priors <- add_criterion(model_bayes_priors, "loo")
+
+# Compare models
+loo_compare(model_bayes_l2, model_bayes_priors)
+```
+
+**Interpretation:**
+
+- **elpd_diff**: difference in expected log predictive density (positive favors first model)
+- **se_diff**: standard error of difference (if |elpd_diff| > 2*se_diff, meaningful difference)
+
+This is conceptually similar to AIC/BIC, but has theoretical advantages in Bayesian frameworks.
+
+---
+
+# When Bayesian Helps: Example with Small L2 Sample
+
+To illustrate Bayesian advantages, let's compare frequentist and Bayesian estimates with **only 5 teams**:
+
+```{r}
+# Subsample to 5 teams only
+set.seed(1234)
+small_sample <- employee_data %>%
+  filter(team_id <= 5)
+
+# Frequentist model
+model_freq_small <- lmer(
+  performance ~ scale(effort)[,1] + (1 | team_id),
+  data = small_sample
+)
+
+# Display variance estimates
+cat("Frequentist variance estimate (team SD):\n")
+print(VarCorr(model_freq_small))
+```
+
+With only 5 teams, the frequentist variance estimate is based on sparse information. Bayesian priors can stabilize this:
+
+```{r, eval = FALSE}
+# Bayesian model with informative prior on team variance
+priors_small <- c(
+  prior(normal(5, 2), class = "Intercept"),
+  prior(normal(0, 1), class = "b"),
+  prior(exponential(1), class = "sigma"),
+  prior(exponential(1), class = "sd")  # prior on team SD
+)
+
+model_bayes_small <- brm(
+  formula = bf(performance ~ scale(effort)[,1] + (1 | team_id)),
+  data = small_sample,
+  prior = priors_small,
+  chains = 4,
+  iter = 2000,
+  warmup = 1000,
+  cores = 4,
+  seed = 1234
+)
+
+# Bayesian variance estimate shrinks toward prior, stabilizing inference
+posterior_summary(model_bayes_small)
+```
+
+The key insight: **Bayesian estimates trade some bias for lower variance**, which can improve prediction and reduce false discoveries when L2 samples are small.
+
+---
+
+# Introduction to Multilevel Structural Equation Modeling
+
+So far, we've assumed predictors and outcomes are **observed without error**. But in organizational research, many constructs are **latent**: we measure them via multiple indicators (e.g., a 5-item engagement scale).
+
+**Multilevel SEM** extends multilevel models to include:
+1. **Latent variables** at each level
+2. **Measurement models** (factor structure)
+3. **Structural models** (relationships between latents)
+
+Example research question: "How does team climate (latent construct, measured via 4 items) predict individual engagement (latent, measured via 3 items) after accounting for measurement error at both levels?"
+
+---
+
+# Multilevel CFA with lavaan
+
+`lavaan` is R's primary SEM package. Multilevel CFA is specified via `level: 1` and `level: 2` in model definition.
+
+## Simulating Multilevel Factor Data
+
+```{r}
+# Simulate data with latent team climate and individual engagement
+set.seed(1234)
+
+n_teams_cfa <- 20
+n_per_team_cfa <- 25
+n_total_cfa <- n_teams_cfa * n_per_team_cfa
+
+# Latent true scores and indicators
+team_climate_true <- rep(rnorm(n_teams_cfa, mean = 5, sd = 1), each = n_per_team_cfa)
+engagement_true <- rnorm(n_total_cfa, mean = 5.5, sd = 1.5) +
+                   0.4 * team_climate_true +  # team climate predicts engagement
+                   rep(rnorm(n_teams_cfa, 0, 0.5), each = n_per_team_cfa)
+
+# Generate measured indicators (with error)
+# Team Climate: 4 indicators
+tc_ind1 <- 0.8 * team_climate_true + rnorm(n_total_cfa, 0, 0.6)
+tc_ind2 <- 0.85 * team_climate_true + rnorm(n_total_cfa, 0, 0.5)
+tc_ind3 <- 0.75 * team_climate_true + rnorm(n_total_cfa, 0, 0.7)
+tc_ind4 <- 0.82 * team_climate_true + rnorm(n_total_cfa, 0, 0.6)
+
+# Engagement: 3 indicators
+eng_ind1 <- 0.8 * engagement_true + rnorm(n_total_cfa, 0, 0.6)
+eng_ind2 <- 0.85 * engagement_true + rnorm(n_total_cfa, 0, 0.5)
+eng_ind3 <- 0.78 * engagement_true + rnorm(n_total_cfa, 0, 0.65)
+
+cfa_data <- tibble(
+  team_id = rep(1:n_teams_cfa, each = n_per_team_cfa),
+  tc1 = tc_ind1, tc2 = tc_ind2, tc3 = tc_ind3, tc4 = tc_ind4,
+  eng1 = eng_ind1, eng2 = eng_ind2, eng3 = eng_ind3
+)
+
+head(cfa_data, 8)
+```
+
+## Specifying Multilevel CFA in lavaan
+
+```{r, eval = FALSE}
+library(lavaan)
+
+# Define multilevel CFA model
+# level: 1 specifies within-level structure (individual variation)
+# level: 2 specifies between-level structure (team variation)
+
+mlm_cfa_model <- "
+  level: 1
+    climate =~ tc1 + tc2 + tc3 + tc4
+    engagement =~ eng1 + eng2 + eng3
+    engagement ~ climate
+
+  level: 2
+    climate =~ tc1 + tc2 + tc3 + tc4
+    engagement =~ eng1 + eng2 + eng3
+    engagement ~ climate
+"
+
+# Fit the model
+mlm_cfa_fit <- cfa(mlm_cfa_model,
+                    data = cfa_data,
+                    cluster = "team_id")
+
+# Summary
+summary(mlm_cfa_fit, fit.measures = TRUE)
+```
+
+**Output interpretation:**
+
+The model estimates:
+- **Within-level (L1)**: individual loadings, factor variances, and the climate → engagement path
+- **Between-level (L2)**: team-level latent factor structure and the team climate → team engagement relationship
+
+This cleanly partitions measurement error at each level, crucial when constructs are measured at different granularities.
+
+## Practical Multilevel CFA Example
+
+A realistic scenario: employee engagement survey in a 25-team organization.
+
+```{r, eval = FALSE}
+# Simplified two-factor model: autonomy and support (both predictors of engagement)
+mlm_model_expanded <- "
+  level: 1
+    autonomy =~ aut1 + aut2 + aut3
+    support =~ sup1 + sup2 + sup3
+    engagement =~ eng1 + eng2 + eng3
+    engagement ~ autonomy + support
+
+  level: 2
+    autonomy =~ aut1 + aut2 + aut3
+    support =~ sup1 + sup2 + sup3
+    engagement =~ eng1 + eng2 + eng3
+    engagement ~ autonomy + support
+"
+
+# Notes:
+# - At L1, we estimate how individual autonomy/support predict individual engagement
+# - At L2, we estimate how team-average autonomy/support predict team-average engagement
+# - Measurement models are estimated at both levels, accounting for indicator error
+```
+
+The elegance of multilevel CFA: we simultaneously account for measurement error and multilevel structure, answering: "How does team context (measured via indicators with error) affect individual outcomes (also measured with error)?"
+
+---
+
+# Practical Guidance
+
+## When to Use Bayesian MLM
+- **Small L2 samples** (< 15 clusters)
+- **Complex models** (multiple random slopes, non-linear terms)
+- **Strong domain knowledge** to specify priors
+- **Direct probability statements** are desired
+
+## When to Use Multilevel CFA
+- **Latent variables** are theoretically important
+- **Measurement error** is substantial
+- **Different levels** have different constructs
+- **Published scales** with multi-item indicators
+
+## Computational Considerations
+- **brms** is powerful but computationally intensive (Stan sampling takes time)
+- **lavaan** is relatively fast for CFA and SEM
+- Start simple: fit one-level models before moving to multilevel
+- Use informative priors in Bayesian models to aid convergence
+
+---
+
+# Try It Yourself
+
+## Exercise 1: Prior Sensitivity
+
+Fit a Bayesian model with **three different prior specifications**:
+1. Non-informative (very weak priors)
+2. Weakly informative (matching domain knowledge)
+3. Informative (tight priors on expected values)
+
+Compare posterior estimates and credible intervals. How much do priors influence conclusions when L1 sample size is large? When small?
+
+## Exercise 2: Posterior Predictive Checks
+
+For a fit Bayesian model, use `pp_check()` to examine:
+- Do replicated datasets from the posterior match the observed data?
+- Are there systematic discrepancies?
+- Visually inspect and describe findings.
+
+## Exercise 3: Multilevel CFA Model Extension
+
+Extend the multilevel CFA example to include:
+- Three latent factors at L1 (e.g., autonomy, support, opportunity for development)
+- All three predicting a final engagement factor
+- Estimate the model and interpret path coefficients at L1 and L2
+
+## Exercise 4: Hybrid Bayesian-Frequentist Workflow
+
+- Fit a frequentist MLM (lmer) and extract estimates
+- Specify Bayesian priors *centered on* frequentist point estimates
+- Fit a Bayesian model with these priors
+- Compare inference: do results converge or diverge? Explain any differences.
+

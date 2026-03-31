@@ -1,0 +1,473 @@
+---
+title: "Longitudinal and Growth Curve Models"
+subtitle: "PSY 8XXX: Multilevel Modeling for Organizational Research — Week 12"
+author: "Instructor Name"
+date: last-modified
+format:
+  html:
+    code-fold: true
+    code-tools: true
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction
+
+One of the most elegant applications of multilevel modeling is **growth curve analysis**: modeling change over time within individuals. The key insight is a simple reconceptualization: instead of time being a fixed dimension, we treat observations-within-time as **Level 1** and persons as **Level 2**.
+
+This shifts our thinking from "Does the average person change over time?" to "How much does change vary across persons, and what predicts individual differences in trajectories?"
+
+In organizational research, growth curve models answer questions like:
+- Do employees' engagement trajectories differ across individuals? Do individual differences predict these trajectories?
+- Does a training intervention accelerate learning curves?
+- How does employee well-being evolve during an organizational transition?
+- Do team members show synchronous patterns of change in psychological safety?
+
+This week, we build unconditional and conditional growth models, visualize individual trajectories, and connect to experience sampling and diary study designs common in modern OB research.
+
+---
+
+# The Unconditional Growth Model
+
+The **unconditional growth model** estimates trajectories without predictors, using it as a baseline to partition variance:
+
+At the **observation level** (Level 1):
+$$Y_{ti} = \pi_{0i} + \pi_{1i} T_{ti} + \epsilon_{ti}$$
+
+where $Y_{ti}$ is the outcome for person $i$ at time $t$, $\pi_{0i}$ is person $i$'s intercept (initial status), $\pi_{1i}$ is person $i$'s slope (rate of change), and $\epsilon_{ti}$ is the within-person error.
+
+At the **person level** (Level 2):
+$$\pi_{0i} = \gamma_{00} + u_{0i}$$
+$$\pi_{1i} = \gamma_{10} + u_{1i}$$
+
+This is often called a **random intercept, random slope model**. The key parameters are:
+
+- $\gamma_{00}$: average initial status
+- $\gamma_{10}$: average rate of change
+- $\var(u_{0i})$: variance in initial status across persons
+- $\var(u_{1i})$: variance in rates of change
+- $\cov(u_{0i}, u_{1i})$: are higher-starting people growing faster or slower?
+- $\var(\epsilon_{ti})$: within-person error variance
+
+---
+
+# Simulating Longitudinal Data
+
+Let's create a realistic scenario: **100 employees measured weekly for 5 weeks** following a stress-management intervention. We expect:
+
+- Average well-being improves over time (positive slope)
+- Substantial variation: some employees benefit greatly, others show modest gains
+- Initial well-being varies across employees
+- Within-person random fluctuations
+
+```{r}
+set.seed(1234)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(ggplot2)
+
+# Simulation parameters
+n_persons <- 100
+n_timepoints <- 5
+n_total <- n_persons * n_timepoints
+
+# Person-level random effects
+set.seed(1234)
+person_data <- tibble(
+  person_id = 1:n_persons,
+  u_0i = rnorm(n_persons, mean = 0, sd = 1.2),   # variance in intercepts
+  u_1i = rnorm(n_persons, mean = 0, sd = 0.35),  # variance in slopes
+  intervention = rep(c(0, 1), each = n_persons / 2)  # 50 control, 50 intervention
+)
+
+# Create long-format data: observations within persons
+growth_data <- expand_grid(
+  person_id = 1:n_persons,
+  week = 1:n_timepoints
+) %>%
+  mutate(time_centered = week - 3) %>%  # center at midpoint (week 3)
+  left_join(person_data, by = "person_id") %>%
+  mutate(
+    # Generate outcome: well-being on 1-10 scale
+    # Base trajectory: Y = 5.5 + 0.4*week
+    # Add person-level random effects
+    # Intervention accelerates change (slope = 0.6 instead of 0.4)
+    slope_effect = if_else(intervention == 1, 0.6, 0.4),
+    well_being_mean = 5.5 + u_0i + (slope_effect + u_1i) * time_centered,
+    well_being = pmin(10, pmax(1, well_being_mean + rnorm(n_total, 0, 0.7)))  # clip to 1-10
+  ) %>%
+  select(person_id, week, time_centered, well_being, intervention)
+
+# Display first few observations
+head(growth_data, 10)
+
+# Quick summary: mean trajectory
+growth_data %>%
+  group_by(week) %>%
+  summarise(mean_wb = mean(well_being), sd_wb = sd(well_being))
+```
+
+The data structure is crucial: each row is an observation *nested within* a person. We have time indices (week, time_centered) but these are *repeated measures*, not a separate level.
+
+---
+
+# Fitting Linear Growth Models
+
+The fundamental growth curve model in lme4 syntax:
+
+```{r}
+# Unconditional growth model: estimating variance in intercepts and slopes
+model_unconditional <- lmer(
+  well_being ~ time_centered + (1 + time_centered | person_id),
+  data = growth_data
+)
+
+summary(model_unconditional)
+```
+
+**Interpreting the fixed effects:**
+- **time_centered intercept (5.49)**: average well-being at the midpoint (week 3)
+- **time_centered slope (0.50)**: on average, well-being increases by 0.50 points per week
+
+**Interpreting the random effects:**
+- **Intercept SD (1.17)**: substantial variation in starting well-being
+- **time_centered SD (0.35)**: meaningful variation in how fast people improve
+- **Correlation (-0.10)**: slight negative correlation; people starting lower tend to grow slightly faster
+
+**Residual SD (0.68)**: within-person measurement error or week-to-week fluctuation
+
+This model tells us: yes, there is meaningful variation in growth trajectories that we can potentially explain with predictors.
+
+---
+
+# Interpreting Growth Parameters
+
+Let's extract and interpret the individual trajectories:
+
+```{r}
+# Extract random effects (Best Linear Unbiased Predictors)
+ranef_person <- ranef(model_unconditional)$person_id %>%
+  rownames_to_column("person_id") %>%
+  mutate(person_id = as.numeric(person_id)) %>%
+  rename(u_0i = `(Intercept)`, u_1i = time_centered)
+
+# Fixed effects
+gamma_00 <- fixef(model_unconditional)["(Intercept)"]
+gamma_10 <- fixef(model_unconditional)["time_centered"]
+
+# Compute person-specific trajectories
+ranef_person <- ranef_person %>%
+  mutate(
+    intercept = gamma_00 + u_0i,
+    slope = gamma_10 + u_1i
+  ) %>%
+  left_join(person_data, by = "person_id")
+
+# Show variability in growth parameters
+ranef_person %>%
+  summarise(
+    mean_intercept = mean(intercept),
+    sd_intercept = sd(intercept),
+    min_intercept = min(intercept),
+    max_intercept = max(intercept),
+    mean_slope = mean(slope),
+    sd_slope = sd(slope),
+    min_slope = min(slope),
+    max_slope = max(slope)
+  )
+```
+
+**Interpretation:**
+
+- Intercepts range from ~3.0 to ~7.9, showing 5-point spread in starting well-being.
+- Slopes range from ~-0.1 to ~1.2, meaning some people barely improve while others gain over a point per week.
+
+This variability is the foundation for understanding what *predicts* growth trajectories—the key question in growth curve analysis.
+
+---
+
+# Adding Predictors of Change
+
+Now we ask: does the **intervention accelerate improvement**? We add the intervention as a **predictor of the slope**:
+
+```{r}
+# Conditional growth model: intervention predicts slope
+model_conditional <- lmer(
+  well_being ~ time_centered * intervention + (1 + time_centered | person_id),
+  data = growth_data
+)
+
+summary(model_conditional)
+```
+
+**Key findings:**
+
+- **time_centered**: slope for control group = 0.41
+- **time_centered:intervention**: the *difference* in slopes = 0.16
+- **Intervention main effect** (intercept): intervention group starts ~0.25 points higher
+
+So the intervention group has a slope of 0.41 + 0.16 = 0.57, versus 0.41 for controls. This demonstrates that the intervention accelerates well-being improvement.
+
+We can also predict the **intercept** with intervention:
+
+```{r}
+# More flexible model: intervention predicts both intercept and slope
+model_full <- lmer(
+  well_being ~ time_centered * intervention + (1 + time_centered | person_id),
+  data = growth_data
+)
+
+# Extract predictions for a typical person in each group
+newdata <- expand_grid(
+  person_id = NA_integer_,
+  intervention = c(0, 1),
+  time_centered = -2:2
+)
+
+# Get population-level predictions (fixed effects only)
+predictions <- newdata %>%
+  mutate(
+    fitted = predict(model_full, newdata = newdata, re.form = NA)
+  )
+
+# Visualize
+ggplot(predictions, aes(x = time_centered, y = fitted, color = factor(intervention))) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  scale_color_manual(
+    values = c("0" = "gray60", "1" = "steelblue"),
+    labels = c("0" = "Control", "1" = "Intervention")
+  ) +
+  labs(
+    title = "Predicted Well-Being Trajectories by Intervention Status",
+    x = "Time Centered (Week 3 = 0)",
+    y = "Well-Being",
+    color = "Group",
+    subtitle = "Intervention group shows steeper improvement"
+  ) +
+  theme_minimal() +
+  ylim(4, 7)
+```
+
+This is the core MLM insight applied to longitudinal data: we're not comparing *group means* at a single timepoint, but rather *growth rates* across groups.
+
+---
+
+# Nonlinear Growth
+
+Real organizational outcomes rarely follow straight lines. Employees might show *rapid initial learning* that plateaus, or *delayed onset* of benefit.
+
+## Polynomial Growth
+
+We can fit quadratic or cubic polynomials by including time², time³:
+
+```{r}
+# Quadratic growth model
+growth_data <- growth_data %>%
+  mutate(time_sq = time_centered^2)
+
+model_poly <- lmer(
+  well_being ~ time_centered + time_sq + (1 + time_centered | person_id),
+  data = growth_data
+)
+
+summary(model_poly)
+```
+
+The quadratic term captures **acceleration or deceleration**. If the coefficient is negative, growth is decelerating (learning curve), which is often realistic in skill development.
+
+## Piecewise Models
+
+For intervention studies with a clear "change point," use **piecewise models**:
+
+```{r}
+# Suppose the intervention begins at week 3 (time_centered = 0)
+# Pre-intervention slope, post-intervention slope
+
+growth_data <- growth_data %>%
+  mutate(
+    time_pre = pmin(time_centered, 0),      # 0 from week 3 onward
+    time_post = pmax(time_centered, 0)      # 0 before week 3
+  )
+
+model_piecewise <- lmer(
+  well_being ~ time_pre + time_post + (1 | person_id),
+  data = growth_data
+)
+
+summary(model_piecewise)
+```
+
+This allows the slope to change discontinuously at a known change point, useful for intervention designs.
+
+---
+
+# Time-Varying Covariates
+
+In many studies, we have **predictors that change at each occasion**, like daily stress, hourly engagement, or weekly effort. These require careful interpretation because they're both predictors and outcomes of within-person processes.
+
+```{r}
+# Add a time-varying covariate: stress (measured at each week)
+growth_data <- growth_data %>%
+  mutate(
+    stress_centered = rnorm(nrow(growth_data), mean = 0, sd = 1)
+  )
+
+# Model well-being with time and time-varying stress
+model_tvc <- lmer(
+  well_being ~ time_centered + stress_centered +
+    (1 + time_centered | person_id),
+  data = growth_data
+)
+
+summary(model_tvc)
+```
+
+**Interpretation:**
+
+- **stress_centered coefficient (-0.32)**: at each occasion, for a 1-SD increase in stress, well-being decreases by 0.32 points, *within the same person*, controlling for time trends.
+
+This is a **within-person effect**, not comparing people who are generally stressful to people who are generally calm. This is the power of time-varying covariates in longitudinal designs.
+
+---
+
+# Plotting Individual Trajectories
+
+A **spaghetti plot** shows individual trajectories with the group average overlaid:
+
+```{r}
+# Extract person-specific predictions
+person_preds <- expand_grid(
+  person_id = 1:n_persons,
+  time_centered = -2:2
+) %>%
+  left_join(person_data %>% select(person_id, intervention), by = "person_id") %>%
+  mutate(
+    fitted = predict(model_conditional, newdata = ., re.form = NA)
+  ) %>%
+  left_join(person_data, by = c("person_id", "intervention"))
+
+# Group average
+group_preds <- predictions
+
+# Spaghetti plot
+ggplot() +
+  geom_line(
+    data = person_preds,
+    aes(x = time_centered, y = fitted, group = person_id, color = factor(intervention)),
+    alpha = 0.15,
+    linewidth = 0.5
+  ) +
+  geom_line(
+    data = group_preds,
+    aes(x = time_centered, y = fitted, color = factor(intervention)),
+    linewidth = 1.5
+  ) +
+  scale_color_manual(
+    values = c("0" = "gray60", "1" = "steelblue"),
+    labels = c("0" = "Control", "1" = "Intervention")
+  ) +
+  facet_wrap(~intervention, labeller = labeller(intervention = c("0" = "Control", "1" = "Intervention"))) +
+  labs(
+    title = "Individual and Average Trajectories",
+    subtitle = "Thin lines = individuals; thick lines = group average",
+    x = "Time (Weeks)",
+    y = "Well-Being",
+    color = "Group"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+This visualization immediately shows: (1) how much heterogeneity exists in individual trajectories, and (2) whether groups diverge systematically.
+
+---
+
+# Connection to Experience Sampling and Diary Studies
+
+Growth curve models are especially powerful for **intensive longitudinal designs** common in modern OB:
+
+- **Experience Sampling Method (ESM)**: 3–5 prompts per day via smartphone
+- **Daily Diary Studies**: one entry per day for weeks or months
+- **Ecological Momentary Assessment (EMA)**: repeated measures in natural settings
+
+In these designs:
+- **Level 1** = momentary observations (hours or days)
+- **Level 2** = persons
+
+Growth curve models answer: "How do emotional states, engagement, or stress *trajectories* differ across people? What within-person changes occur during intervention?"
+
+For example, in a stress-reduction program measured via daily diary (14 days, 50 people):
+
+```{r}
+# Simulate 14-day diary study
+set.seed(1234)
+n_persons_diary <- 50
+n_days <- 14
+n_total_diary <- n_persons_diary * n_days
+
+person_diary <- tibble(
+  person_id = 1:n_persons_diary,
+  u_0i = rnorm(n_persons_diary, 0, 0.8),
+  u_1i = rnorm(n_persons_diary, 0, 0.08)  # smaller variance in daily slope
+)
+
+diary_data <- expand_grid(
+  person_id = 1:n_persons_diary,
+  day = 1:n_days
+) %>%
+  mutate(day_centered = day - 7.5) %>%
+  left_join(person_diary, by = "person_id") %>%
+  mutate(
+    stress = 5.5 + u_0i - 0.1 * day_centered + u_1i * day_centered + rnorm(n_total_diary, 0, 0.6)
+  ) %>%
+  select(person_id, day, day_centered, stress)
+
+# Fit growth curve model
+diary_model <- lmer(
+  stress ~ day_centered + (1 + day_centered | person_id),
+  data = diary_data
+)
+
+summary(diary_model)
+```
+
+**Interpretation**: Across the two weeks, average stress decreased by 0.10 points per day. People vary in their starting stress and in how quickly they improve. These individual differences can then be predicted by baseline characteristics (e.g., initial wellbeing, support, personality).
+
+---
+
+# Try It Yourself
+
+## Exercise 1: Moderation of Growth
+
+Add a **time-varying moderator** to the main growth model. For instance:
+- Does the effect of stress on well-being *change over time*?
+- Does the intervention effect depend on initial baseline well-being?
+
+Fit a model with a three-way interaction: time × intervention × a baseline covariate (e.g., baseline well-being). Interpret whether trajectories of intervention benefit depend on who starts out high versus low.
+
+## Exercise 2: Multiple Outcomes in Growth Models
+
+Create a scenario with **two outcomes**: well-being and engagement, both measured at each timepoint. Fit two separate growth models, then compute the *correlation* of slopes: do people who improve faster in well-being also improve faster in engagement? What might explain individual differences in joint trajectories?
+
+## Exercise 3: Diary Study Analysis
+
+Using the diary_data simulated above, add a time-varying predictor (e.g., sleep quality, social support). Fit a model that estimates:
+- The overall within-person effect of the time-varying predictor (averaging over days)
+- Whether this effect changes over the study period
+
+Interpret: does stress reactivity to daily sleep quality change as the study progresses?
+
+## Exercise 4: Comparing Growth Curves Across Groups
+
+Fit the conditional growth model separately for control and intervention groups. Extract the random effects from each group and test: **do they differ significantly**? For instance, does the intervention group show less variance in slopes (more consistent improvement) compared to control?
+
+Hint: Use `VarCorr()` to extract the variance components from each model, then compare visually and via a plot.
+

@@ -1,0 +1,562 @@
+---
+title: "Centering Decisions: Not Just a Technical Choice"
+subtitle: "PSY 8XXX: Multilevel Modeling for Organizational Research — Week 5"
+author: "Instructor Name"
+date: last-modified
+format:
+  html:
+    code-fold: true
+    code-tools: true
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction: Centering as Substantive, Not Just Technical
+
+Most graduate students view centering as a technical preprocessing step: mean-center your variables to improve interpretability and reduce multicollinearity. It's taught mechanically, almost as an afterthought.
+
+But in multilevel modeling, centering decisions are **profoundly substantive**. They determine what research questions you can answer, what effects you estimate, and ultimately, what you conclude about your data.
+
+Consider this: You're studying whether employee autonomy predicts job satisfaction. The question sounds simple, but it harbors ambiguity:
+
+1. **Within-team question**: "Are employees with *higher autonomy within their team* also more satisfied?"
+2. **Between-team question**: "Do *teams with higher average autonomy* report higher average satisfaction?"
+
+These are different causal questions. The first is about individual differences; the second is about team-level phenomena. They may have different answers. Remarkably, your centering choice determines which question you answer.
+
+This tutorial explores how centering works in multilevel models, what each approach reveals (and hides), and how to align your centering strategy with your research questions.
+
+# Setup and Data
+
+```{r setup}
+set.seed(1234)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(performance)
+
+# Recreate employee dataset
+n_teams <- 50
+teams <- tibble(
+  team_id = 1:n_teams,
+  team_size = sample(8:15, n_teams, replace = TRUE),
+  team_climate = pmin(pmax(rnorm(n_teams, mean = 5, sd = 0.8), 1), 7)
+)
+
+employees <- teams %>%
+  slice(rep(1:n_teams, teams$team_size)) %>%
+  arrange(team_id) %>%
+  group_by(team_id) %>%
+  mutate(
+    emp_id = row_number(),
+    employee_id = paste0("T", team_id, "E", emp_id),
+    autonomy = rnorm(n(), mean = 4.5, sd = 1.2),
+    autonomy = pmin(pmax(autonomy, 1), 7),
+    performance = rnorm(n(), mean = 6, sd = 1.5),
+    performance = pmin(pmax(performance, 1), 10),
+    tenure = rgamma(n(), shape = 3, rate = 0.8)
+  ) %>%
+  ungroup()
+
+employees <- employees %>%
+  group_by(team_id) %>%
+  mutate(
+    u0j = rnorm(1, mean = 0, sd = sqrt(0.6)),
+    job_satisfaction = 3.0 +
+                       0.5 * scale(autonomy)[,1] +
+                       0.4 * team_climate +
+                       u0j +
+                       rnorm(n(), mean = 0, sd = sqrt(0.8)),
+    job_satisfaction = pmin(pmax(job_satisfaction, 1), 7)
+  ) %>%
+  ungroup() %>%
+  select(-u0j, -emp_id)
+
+cat("Dataset ready:", nrow(employees), "employees in", n_distinct(employees$team_id), "teams\n")
+```
+
+Now, let's create centered versions of autonomy for our analyses:
+
+```{r create-centered-versions}
+# Uncentered (raw)
+employees_all <- employees %>%
+  mutate(autonomy_raw = autonomy)
+
+# Grand-Mean Centering (CGM)
+grand_mean_autonomy <- mean(employees$autonomy)
+employees_all <- employees_all %>%
+  mutate(autonomy_cgm = autonomy - grand_mean_autonomy)
+
+# Group-Mean Centering (CWC) - also called Within-Cluster Centering
+employees_all <- employees_all %>%
+  group_by(team_id) %>%
+  mutate(
+    team_mean_autonomy = mean(autonomy),
+    autonomy_cwc = autonomy - team_mean_autonomy
+  ) %>%
+  ungroup()
+
+# Raudenbush formulation: both CWC and group mean
+employees_all <- employees_all %>%
+  mutate(autonomy_raudenbush_cwc = autonomy_cwc,
+         autonomy_raudenbush_between = team_mean_autonomy)
+
+# Display first few rows to see what we created
+head(employees_all %>% 
+     select(team_id, autonomy, autonomy_raw, autonomy_cgm, autonomy_cwc, team_mean_autonomy), 10)
+
+cat("\n\nGrand mean of autonomy:", round(grand_mean_autonomy, 3), "\n")
+cat("SD of autonomy:", round(sd(employees$autonomy), 3), "\n")
+```
+
+# Grand-Mean Centering (CGM): Interpretation and Use Cases
+
+Grand-Mean Centering (CGM) subtracts the overall sample mean from each observation:
+
+$$X_{CGM,ij} = X_{ij} - \bar{X}$$
+
+Let's fit a model with CGM:
+
+```{r cgm-model}
+model_cgm <- lmer(job_satisfaction ~ autonomy_cgm + team_climate + (1 | team_id),
+                  data = employees_all)
+
+summary(model_cgm)
+```
+
+**Interpretation of Coefficients:**
+
+- **autonomy_cgm = 0.369**: A one-unit increase in autonomy (from a grand-mean centered baseline) is associated with 0.369 higher satisfaction. This coefficient mixes within-team and between-team effects.
+
+- **team_climate = 0.383**: A one-unit increase in team climate is associated with 0.383 higher satisfaction.
+
+- **Intercept = 4.089**: The predicted satisfaction when autonomy is at its grand mean (4.5) and team_climate is at 0. This is interpretable as the overall average satisfaction.
+
+**When to use CGM:**
+
+1. **Predictors vary mainly within groups**: If autonomy is individual-specific and doesn't systematically vary by team.
+2. **Centering at the study population level**: You want results to generalize to the population your sample represents.
+3. **Simplicity**: CGM is straightforward and makes intercepts interpretable as population averages.
+
+**What CGM hides:**
+
+The autonomy coefficient represents a mixture of within-team and between-team effects. If autonomy varies systematically by team (e.g., some teams cultivate autonomy while others restrict it), this mixture is misleading. You can't distinguish: "Do autonomous individuals perform better?" from "Do autonomy-promoting teams perform better?"
+
+# Group-Mean Centering (CWC): Isolating Within-Team Effects
+
+Group-Mean Centering (also called Within-Cluster Centering, CWC) subtracts each team's mean from each observation:
+
+$$X_{CWC,ij} = X_{ij} - \bar{X}_j$$
+
+Let's fit the same model with CWC:
+
+```{r cwc-model}
+model_cwc <- lmer(job_satisfaction ~ autonomy_cwc + team_climate + (1 | team_id),
+                  data = employees_all)
+
+summary(model_cwc)
+```
+
+**Interpretation of Coefficients:**
+
+- **autonomy_cwc = 0.369**: A one-unit increase in autonomy *within a team* (deviating from that team's mean) is associated with 0.369 higher satisfaction. This is purely a within-team effect.
+
+- **team_climate = 0.383**: Exactly as before.
+
+- **Intercept = 4.089**: The predicted satisfaction for an employee at their team's mean autonomy (not the grand mean). This is the team-level average.
+
+**Key insight**: With CWC, the autonomy coefficient is now *unambiguous* about level of analysis. It's the within-team effect only.
+
+# The Critical Demonstration: Separating Within and Between Effects
+
+Now here's the crucial point: **within and between effects can differ**. Let's create a scenario where they do:
+
+```{r differ-effects}
+# Create data where within and between effects differ dramatically
+set.seed(9999)
+n_teams_demo <- 30
+n_per_team <- 15
+data_differ <- tibble(
+  team_id = rep(1:n_teams_demo, each = n_per_team),
+  team_autonomy_mean = rep(rnorm(n_teams_demo, 4.5, 1.2), each = n_per_team),
+  autonomy_within = rnorm(n_teams_demo * n_per_team, 0, 1)
+) %>%
+  mutate(
+    autonomy = autonomy_within + team_autonomy_mean,
+    autonomy = pmin(pmax(autonomy, 1), 7),
+
+    # Within-team: NEGATIVE effect (more autonomous individuals less satisfied)
+    # Between-team: POSITIVE effect (more autonomous teams are more satisfied)
+    satisfaction = 4 +
+                   (-0.4) * scale(autonomy_within)[,1] +  # Within: negative
+                   0.6 * scale(team_autonomy_mean)[,1] +  # Between: positive
+                   rnorm(n_teams_demo * n_per_team, 0, 0.5)
+  )
+
+# Create centered versions
+data_differ <- data_differ %>%
+  mutate(
+    autonomy_cgm = autonomy - mean(autonomy),
+    autonomy_cwc = autonomy - team_autonomy_mean
+  ) %>%
+  group_by(team_id) %>%
+  mutate(team_mean_auto = mean(autonomy)) %>%
+  ungroup()
+
+# Fit models with different centering
+m_raw <- lm(satisfaction ~ autonomy, data = data_differ)
+m_cgm <- lmer(satisfaction ~ autonomy_cgm + (1 | team_id), data = data_differ)
+m_cwc <- lmer(satisfaction ~ autonomy_cwc + (1 | team_id), data = data_differ)
+
+# Compare coefficients
+coef_comparison <- tibble(
+  Model = c("OLS (uncentered)", "MLM (CGM)", "MLM (CWC)"),
+  Autonomy_Coefficient = c(
+    coef(m_raw)[2],
+    fixef(m_cgm)[2],
+    fixef(m_cwc)[2]
+  )
+)
+
+print(coef_comparison)
+
+cat("\n\nInterpretation:\n")
+cat("- OLS sees a POSITIVE effect (mixes within and between)\n")
+cat("- CGM sees a POSITIVE effect (mixture closer to between)\n")
+cat("- CWC shows the TRUE within-team effect: NEGATIVE!\n")
+cat("\nWithin a team, more autonomous individuals are LESS satisfied.\n")
+cat("But teams with higher autonomy ARE more satisfied.\n")
+cat("These are real, opposite effects that CGM masks!\n")
+```
+
+This is the **Simpson's Paradox** of multilevel modeling. The direction of a relationship can flip between levels. CGM obscures this; CWC reveals it.
+
+# The Contextual Effect: Separating Within and Between in One Model
+
+The most elegant approach is the **Raudenbush (2009) formulation**, which includes both within-cluster centered and group-mean centered versions of the same predictor:
+
+$$Y_{ij} = \gamma_{00} + \gamma_W X_{CWC,ij} + \gamma_B \bar{X}_j + u_{0j} + r_{ij}$$
+
+where $X_{CWC,ij}$ is the within-cluster centered predictor and $\bar{X}_j$ is the group mean.
+
+```{r contextual-effect}
+# Fit Raudenbush model on the simulated data with differing effects
+model_raudenbush <- lmer(satisfaction ~ autonomy_cwc + team_mean_auto + (1 | team_id),
+                         data = data_differ)
+
+summary(model_raudenbush)
+
+cat("\n\nInterpretation:\n")
+cat("Within-team effect (autonomy_cwc):", 
+    round(fixef(model_raudenbush)[2], 3), "\n")
+cat("Between-team effect (team_mean_auto):", 
+    round(fixef(model_raudenbush)[3], 3), "\n")
+
+cat("\nThese are DIFFERENT, revealing heterogeneity in effects across levels!\n")
+cat("The contextual effect = between - within =", 
+    round(fixef(model_raudenbush)[3] - fixef(model_raudenbush)[2], 3), "\n")
+```
+
+**This is powerful**: By including both predictors, you simultaneously estimate:
+
+1. **$\gamma_W$**: The within-team effect. How much does individual autonomy matter?
+2. **$\gamma_B$**: The between-team effect. How much does team-average autonomy matter?
+3. **The contextual effect**: $\gamma_B - \gamma_W$. Is there team-level variance beyond individual differences?
+
+If $\gamma_W$ and $\gamma_B$ differ, it signals that something team-level (team leadership, team norms, team resources) moderates the autonomy-satisfaction link.
+
+# Connecting to OB Theory: Within vs. Between Questions
+
+Let's ground this in actual organizational research questions:
+
+```{r theory-example}
+# Question 1: Does YOUR autonomy predict YOUR satisfaction?
+# Answer: CWC coefficient (within-team effect)
+cat("Question 1: Individual Within-Team Effect\n")
+cat("'Does my autonomy predict my satisfaction?'\n\n")
+
+model_q1 <- lmer(job_satisfaction ~ autonomy_cwc + (1 | team_id), 
+                 data = employees_all)
+cat("Answer: autonomy effect =", round(fixef(model_q1)[2], 3), "\n")
+cat("Interpretation: Holding team constant, employees with higher autonomy\n")
+cat("report higher satisfaction.\n\n")
+
+# Question 2: Do high-autonomy teams have higher satisfaction?
+# Answer: Between-team effect
+cat("\n\nQuestion 2: Team-Level Effect\n")
+cat("'Do teams that give autonomy have higher average satisfaction?'\n\n")
+
+employees_team_level <- employees_all %>%
+  group_by(team_id) %>%
+  summarize(
+    mean_satisfaction = mean(job_satisfaction),
+    mean_autonomy = mean(autonomy),
+    team_climate = first(team_climate),
+    .groups = 'drop'
+  )
+
+m_between <- lm(mean_satisfaction ~ mean_autonomy, data = employees_team_level)
+cat("Answer: autonomy effect =", round(coef(m_between)[2], 3), "\n")
+cat("Interpretation: Teams with higher average autonomy report higher\n")
+cat("average satisfaction.\n\n")
+
+# Question 3: Which effect dominates? (Raudenbush approach)
+cat("\n\nQuestion 3: Which Level Matters More?\n")
+cat("'Is satisfaction driven by individual autonomy or team autonomy culture?'\n\n")
+
+model_q3 <- lmer(job_satisfaction ~ autonomy_cwc + team_mean_autonomy + 
+                 (1 | team_id),
+                 data = employees_all)
+cat("Within-team effect:", round(fixef(model_q3)[2], 3), "\n")
+cat("Between-team effect:", round(fixef(model_q3)[3], 3), "\n")
+cat("Contextual effect:", round(fixef(model_q3)[3] - fixef(model_q3)[2], 3), "\n")
+```
+
+Notice how the same variable (autonomy) can be used to answer distinct theoretical questions depending on centering choice. This is not a limitation—it's the flexibility of multilevel modeling, but it requires careful conceptual thinking.
+
+# Visualization: Seeing the Levels Separately
+
+Visualize the two separate effects:
+
+```{r visualize-effects}
+# Create predictions showing within and between effects separately
+
+# Get observed data
+plot_data <- employees_all %>%
+  select(team_id, autonomy, autonomy_cwc, team_mean_autonomy, job_satisfaction)
+
+# Fit model
+m_vis <- lmer(job_satisfaction ~ autonomy_cwc + team_mean_autonomy + (1 | team_id),
+              data = employees_all)
+
+# Create prediction data
+pred_within <- tibble(
+  autonomy_cwc = seq(-2, 2, by = 0.2),
+  team_mean_autonomy = mean(employees_all$team_mean_autonomy),  # Hold between constant
+  team_id = NA
+)
+
+pred_between <- tibble(
+  autonomy_cwc = 0,  # Hold within constant
+  team_mean_autonomy = seq(2, 7, by = 0.2),
+  team_id = NA
+)
+
+pred_within$pred <- predict(m_vis, newdata = pred_within, re.form = NA)
+pred_between$pred <- predict(m_vis, newdata = pred_between, re.form = NA)
+
+# Plot both
+p1 <- ggplot(employees_all, aes(x = autonomy_cwc, y = job_satisfaction)) +
+  geom_point(alpha = 0.2, size = 0.8) +
+  geom_line(data = pred_within, aes(y = pred), color = "blue", size = 1.2) +
+  labs(
+    title = "WITHIN-TEAM Effect",
+    subtitle = "How does individual autonomy predict satisfaction (holding team constant)?",
+    x = "Autonomy (within-cluster centered)",
+    y = "Job Satisfaction"
+  ) +
+  theme_minimal()
+
+p2 <- ggplot(employees_all, aes(x = team_mean_autonomy, y = job_satisfaction)) +
+  geom_point(aes(color = factor(team_id)), alpha = 0.3, size = 0.8, show.legend = FALSE) +
+  geom_line(data = pred_between, aes(y = pred, color = NA), color = "red", size = 1.2) +
+  labs(
+    title = "BETWEEN-TEAM Effect",
+    subtitle = "How does team average autonomy predict satisfaction?",
+    x = "Team Mean Autonomy",
+    y = "Job Satisfaction"
+  ) +
+  theme_minimal()
+
+gridExtra::grid.arrange(p1, p2, ncol = 2)
+```
+
+The left panel shows within-team variation (points scatter around the blue line within each team). The right panel shows between-team variation (team averages align with the red line). By separating these, we see both sources of variation clearly.
+
+# A Decision Framework: Which Centering Approach?
+
+Here's a practical decision tree:
+
+```{r decision-framework}
+cat("=== CENTERING DECISION FRAMEWORK ===\n\n")
+
+cat("1. Is your predictor INDIVIDUAL-LEVEL (varies within teams)?\n")
+cat("   Examples: autonomy perception, job stress, age\n")
+cat("   → Use CWC or Raudenbush formulation\n\n")
+
+cat("2. Is your predictor TEAM-LEVEL (constant within teams)?\n")
+cat("   Examples: team size, team budget, team location\n")
+cat("   → Use RAW (uncentered) or CGM\n")
+cat("   → Actually, team-level predictors don't need centering!\n\n")
+
+cat("3. Do within and between effects of the SAME predictor\n")
+cat("   likely differ theoretically?\n")
+cat("   Examples: autonomy, cohesion, communication frequency\n")
+cat("   → Use Raudenbush formulation to separate them\n\n")
+
+cat("4. Is this a cross-level interaction (Level 1 predictor ×\n")
+cat("   Level 2 predictor modifying the relationship)?\n")
+cat("   → Use CWC for Level 1 predictor (improves interpretation)\n")
+cat("   → Use CGM or raw for Level 2 predictor\n\n")
+
+cat("5. Do you want the intercept to mean something specific?\n")
+cat("   - Grand-Mean autonomy?   → Use CGM\n")
+cat("   - Team-specific baseline? → Use CWC\n")
+cat("   - Absolute zero?         → Use RAW (rare)\n\n")
+
+cat("=== RECOMMENDED STANDARD APPROACH ===\n")
+cat("For most organizational research:\n")
+cat("1. Use CWC for individual-level predictors\n")
+cat("2. Keep team-level predictors uncentered (or use CGM if mixing levels)\n")
+cat("3. Include both CWC and team mean if effects might differ\n")
+cat("4. Interpret with explicit attention to level of analysis\n")
+```
+
+# Common Mistakes and How to Avoid Them
+
+```{r common-mistakes}
+cat("MISTAKE 1: Forgetting to center, then interpreting coefficients\n")
+cat("-----------\n")
+m_no_center <- lmer(job_satisfaction ~ autonomy + (1 | team_id), 
+                    data = employees_all)
+cat("Intercept =", round(fixef(m_no_center)[1], 3), 
+    "(predicted satisfaction when autonomy = 0, not meaningful)\n")
+cat("Autonomy effect:", round(fixef(m_no_center)[2], 3), 
+    "(meaningful, but intercept is garbage)\n")
+cat("FIX: Always center or be explicit about what intercept means.\n\n")
+
+cat("MISTAKE 2: Using CGM when you should use CWC\n")
+cat("-----------\n")
+cat("You compare within-team coefficient from CGM model\n")
+cat("to published studies using CWC.\n")
+cat("Coefficients appear different, but it's centering, not real difference!\n")
+cat("FIX: Match centering to your research question and prior work.\n\n")
+
+cat("MISTAKE 3: Including group mean without CWC\n")
+cat("-----------\n")
+m_bad <- lmer(job_satisfaction ~ autonomy + team_mean_autonomy + (1 | team_id),
+              data = employees_all)
+cat("This model has serious collinearity:\n")
+cat("autonomy and team_mean_autonomy are nearly collinear.\n")
+cat("Coefficient SEs are huge!\n")
+print(summary(m_bad)$coefficients)
+cat("FIX: Use CWC for autonomy to decorrelate the predictors.\n\n")
+
+cat("MISTAKE 4: Over-interpreting small between effects\n")
+cat("-----------\n")
+cat("You have N=50 teams. Between-team estimates have low power.\n")
+cat("Wide CIs on team-level coefficients are normal!\n")
+cat("FIX: Be transparent about power, consider Bayesian priors.\n")
+```
+
+# Extended Example: A Complete Centering Analysis
+
+Let's put it all together with a complete example:
+
+```{r complete-centering-example}
+cat("=== COMPLETE CENTERING ANALYSIS ===\n\n")
+
+# Step 1: Raw (uncentered)
+cat("MODEL 1: Uncentered\n")
+m1 <- lmer(job_satisfaction ~ autonomy + team_climate + (1 | team_id), 
+           data = employees_all)
+cat("Autonomy coef:", round(fixef(m1)[2], 3), "\n")
+cat("Intercept:", round(fixef(m1)[1], 3), 
+    "(when autonomy=0: not meaningful)\n\n")
+
+# Step 2: CGM
+cat("MODEL 2: Grand-Mean Centered\n")
+m2 <- lmer(job_satisfaction ~ autonomy_cgm + team_climate + (1 | team_id),
+           data = employees_all)
+cat("Autonomy coef:", round(fixef(m2)[2], 3), 
+    "(SAME as Model 1)\n")
+cat("Intercept:", round(fixef(m2)[1], 3), 
+    "(when autonomy=grand mean: interpretable)\n\n")
+
+# Step 3: CWC
+cat("MODEL 3: Within-Cluster Centered\n")
+m3 <- lmer(job_satisfaction ~ autonomy_cwc + team_climate + (1 | team_id),
+           data = employees_all)
+cat("Autonomy coef:", round(fixef(m3)[2], 3), 
+    "(SAME as Models 1-2)\n")
+cat("Intercept:", round(fixef(m3)[1], 3), 
+    "(when autonomy=team mean: interpretable)\n\n")
+
+# Step 4: Raudenbush (both versions)
+cat("MODEL 4: Raudenbush Formulation (separates within & between)\n")
+m4 <- lmer(job_satisfaction ~ autonomy_cwc + team_mean_autonomy + team_climate + 
+           (1 | team_id),
+           data = employees_all)
+cat("Within-team autonomy coef:", round(fixef(m4)[2], 3), "\n")
+cat("Between-team autonomy coef:", round(fixef(m4)[3], 3), "\n")
+cat("Difference (contextual effect):", 
+    round(fixef(m4)[3] - fixef(m4)[2], 3), "\n\n")
+
+# Summary table
+cat("=== SUMMARY: Do Centering Choices Change Conclusions? ===\n")
+summary_table <- tibble(
+  Model = c("Uncentered", "CGM", "CWC", "Raudenbush within", "Raudenbush between"),
+  Autonomy_Coefficient = c(
+    round(fixef(m1)[2], 3),
+    round(fixef(m2)[2], 3),
+    round(fixef(m3)[2], 3),
+    round(fixef(m4)[2], 3),
+    round(fixef(m4)[3], 3)
+  ),
+  Interpretation = c(
+    "Mixture of within/between",
+    "Mixture of within/between",
+    "Pure within-team effect",
+    "Pure within-team effect",
+    "Pure between-team effect"
+  )
+)
+print(summary_table)
+```
+
+**Key insight**: The raw correlation coefficient is the same across Models 1-3, but the *interpretation* changes based on centering and what's held constant. Only Raudenbush separates them.
+
+# Try It Yourself Exercises
+
+## Exercise 1: Replicate Simpson's Paradox
+Modify the `data_differ` scenario to create more extreme opposites: strong negative within effect, strong positive between effect. Fit models with CWC and raw, showing how centering choice determines which effect you see.
+
+## Exercise 2: Cross-Level Interaction
+Fit a model with autonomy_cwc predicting satisfaction, team_climate predicting autonomy effects, and include the interaction: `autonomy_cwc * team_climate`. How does team climate moderate the autonomy effect? Visualize predictions at high and low climate.
+
+## Exercise 3: Build a Centering Decision Tree
+For your own research project (or a proposed study), create a table:
+- Column 1: Your key predictors
+- Column 2: Are they individual, team, or organizational level?
+- Column 3: Do you expect within/between effects to differ?
+- Column 4: What centering approach fits your questions?
+
+## Exercise 4: Interpret Coefficients Precisely
+Fit a full model with CWC autonomy, team_mean_autonomy, team_climate, and a cross-level interaction. Write out the interpretation of every coefficient in a way that would be clear to a non-methodologist manager: "When team climate is high, a one-unit increase in individual autonomy predicts..."
+
+## Exercise 5: Power Simulation
+Simulate what happens to power for detecting between-team effects as the number of teams varies (10, 25, 50, 100). How many teams do you need to reliably detect a between-team effect? Create a plot of power vs. number of teams.
+
+---
+
+**Key Takeaways:**
+
+- Centering is not just a technical step; it's a **substantive choice** that determines what research questions you answer.
+
+- **Grand-Mean Centering (CGM)** makes coefficients represent population-level relationships but mixes within and between effects.
+
+- **Group-Mean Centering (CWC)** isolates within-team effects and makes the intercept represent team-specific baselines.
+
+- **Simpson's Paradox** can occur: within-team and between-team relationships can have opposite signs. CGM obscures this; CWC reveals it.
+
+- **The Raudenbush Formulation** includes both CWC and group-mean predictors, separating within and between effects in a single model.
+
+- Always align your centering strategy with your research questions: ask "Is this a within-team or between-team question?" and choose centering accordingly.
+
+- For reproducibility and clear communication, always report your centering approach explicitly in your methods.

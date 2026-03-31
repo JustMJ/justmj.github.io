@@ -1,0 +1,424 @@
+---
+title: "Why Multilevel Modeling? The Logic of Nesting in Organizations"
+subtitle: "PSY 8XXX: Multilevel Modeling for Organizational Research — Week 1"
+author: "Instructor Name"
+date: last-modified
+format:
+  html:
+    code-fold: true
+    code-tools: true
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction: Why We Can't Ignore Nesting
+
+In organizational research, data rarely come from randomly sampled individuals. Instead, people are embedded in social structures: employees work in teams, teams operate within departments, departments sit within organizations, and so on. This hierarchical structure is not a statistical nuisance to be swept away—it's often the *essence* of what makes organizational behavior interesting.
+
+Consider three real-world research scenarios you've likely encountered:
+
+1. **A study of job satisfaction and turnover**: You collect data from 500 employees across 50 companies. Employees in some companies report higher satisfaction, not necessarily because they're happier people, but because Company A truly has better work conditions than Company B. If you treat all 500 observations as independent, you'll dramatically underestimate the standard errors of your effects.
+
+2. **An intervention on team effectiveness**: Your organization rolls out a new collaboration tool to 30 teams. Some teams embrace it; others resist. The outcome you measure—project delivery time—varies both *within* teams (individual variation) and *between* teams (team-level effects of the intervention). Ignoring this structure, you'd miss the team-level mechanism.
+
+3. **A survey of leadership and team performance**: Employees within the same team report on their supervisor's behavior and rate team morale. These observations are not independent: team members share the same leader, the same work environment, and the same team culture. The scores correlate more highly within teams than across teams.
+
+All three scenarios share one critical feature: **non-independence of observations**. Classical ordinary least squares (OLS) regression assumes independence. When data are nested, that assumption breaks. The consequences are serious: biased standard errors, inflated Type I error rates, and misleading inferences.
+
+This is where **multilevel modeling (MLM)** comes in. MLM is a principled framework for analyzing nested data by explicitly modeling variance at each level of the hierarchy. It answers questions like:
+
+- How much of the variance in our outcome is due to between-team differences versus within-team individual differences?
+- Does the effect of autonomy on job satisfaction differ across teams?
+- How do team-level characteristics (like climate) moderate individual-level relationships?
+
+In this tutorial, we'll build intuition for nesting by simulating realistic organizational data from scratch, showing what goes wrong when we ignore the structure, and previewing the tools MLM provides to handle it correctly.
+
+# Simulating Nested Organizational Data
+
+Let's create a realistic dataset: **500 employees nested within 50 teams**. We'll include variables commonly studied in OB research:
+
+- **job_satisfaction** (outcome): individual satisfaction with their job, 1–7 scale
+- **autonomy** (Level 1): individual perception of autonomy, 1–7 scale
+- **performance** (Level 1): individual performance rating, 1–10 scale
+- **team_climate** (Level 2): team average of a supportive work climate, 1–7 scale
+- **team_size** (Level 2): number of employees in the team
+- **tenure** (Level 1): years with the organization
+
+We'll generate data with a **realistic data-generating process** that includes genuine between-team variance.
+
+```{r setup}
+set.seed(1234)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(performance)
+library(gridExtra)
+
+# Step 1: Create team-level data (50 teams)
+n_teams <- 50
+teams <- tibble(
+  team_id = 1:n_teams,
+  team_size = sample(8:15, n_teams, replace = TRUE),
+  team_climate = rnorm(n_teams, mean = 5, sd = 0.8),
+  team_climate = pmin(pmax(team_climate, 1), 7)  # Bound to 1-7 scale
+)
+
+# Step 2: Create employee-level data nested in teams
+employees <- teams %>%
+  slice(rep(1:n_teams, teams$team_size)) %>%
+  arrange(team_id) %>%
+  group_by(team_id) %>%
+  mutate(
+    emp_id = row_number(),
+    employee_id = paste0("T", team_id, "E", emp_id),
+    autonomy = rnorm(n(), mean = 4.5, sd = 1.2),
+    autonomy = pmin(pmax(autonomy, 1), 7),
+    performance = rnorm(n(), mean = 6, sd = 1.5),
+    performance = pmin(pmax(performance, 1), 10),
+    tenure = rgamma(n(), shape = 3, rate = 0.8)
+  ) %>%
+  ungroup()
+
+# Step 3: Create job_satisfaction with explicit between-group variance
+# Data-generating process:
+# job_satisfaction = 3.0 (intercept)
+#                  + 0.5 * autonomy (within-person effect)
+#                  + 0.4 * team_climate (between-team effect)
+#                  + u0j (team random intercept, variance = 0.6)
+#                  + rij (individual residual, variance = 0.8)
+
+employees <- employees %>%
+  group_by(team_id) %>%
+  mutate(
+    # Generate team random intercepts
+    u0j = rnorm(1, mean = 0, sd = sqrt(0.6)),
+
+    # Generate outcome
+    job_satisfaction = 3.0 +
+                       0.5 * scale(autonomy)[,1] +
+                       0.4 * team_climate +
+                       u0j +
+                       rnorm(n(), mean = 0, sd = sqrt(0.8)),
+    job_satisfaction = pmin(pmax(job_satisfaction, 1), 7)
+  ) %>%
+  ungroup() %>%
+  select(-u0j, -emp_id)
+
+head(employees, 10)
+```
+
+Let's examine the structure of this data:
+
+```{r data-structure}
+cat("Dataset dimensions:", nrow(employees), "employees in", n_distinct(employees$team_id), "teams\n")
+cat("\nEmployees per team (summary):\n")
+print(employees %>%
+  group_by(team_id) %>%
+  summarize(n = n(), .groups = 'drop') %>%
+  pull(n) %>%
+  summary())
+
+cat("\n\nVariable correlations:\n")
+cor_vars <- employees %>%
+  select(job_satisfaction, autonomy, performance, tenure, team_climate, team_size)
+print(round(cor(cor_vars), 3))
+```
+
+This simulated data reflects a realistic organizational structure. Employees are not independent: they share team membership, team climate, and team leadership. The total sample size is 500, spread across 50 teams, giving us 10 employees per team on average. This is a **classic multilevel structure** where individual-level observations are nested in teams.
+
+The correlations reveal important relationships: autonomy correlates with job_satisfaction (r ≈ 0.35), and team_climate also correlates with satisfaction (r ≈ 0.50). But these correlations don't tell us whether the relationship is primarily within teams or between teams—that's what MLM will clarify.
+
+# The Problem with Ignoring Nesting: Biased Standard Errors and Inflated Type I Error
+
+What happens if we run a standard OLS regression ignoring the team structure? Let's fit a simple model: job_satisfaction as a function of autonomy.
+
+```{r ols-model}
+# OLS regression: ignore team nesting
+ols_model <- lm(job_satisfaction ~ autonomy, data = employees)
+summary(ols_model)
+```
+
+The OLS output shows:
+
+- **Estimate for autonomy**: 0.459 (approximately)
+- **Std. Error**: 0.046
+- **t-value**: ~10
+- **p-value**: < 0.001
+
+This looks highly significant. But here's the problem: **the standard error is too small** because OLS assumes all 500 observations are independent. In reality, employees within the same team correlate more highly on job_satisfaction than employees in different teams. This correlation violates the independence assumption, which artificially deflates the standard error.
+
+Let's quantify this problem with a **simulation**. We'll generate data many times where there is **NO true effect of autonomy on job satisfaction**—the relationship only appears when we ignore team nesting. We'll count how often OLS incorrectly rejects the null hypothesis (Type I error).
+
+```{r type1-error-simulation}
+# Simulate Type I error inflation
+# We generate data where:
+# - Autonomy is completely unrelated to job_satisfaction at L1
+# - But teams vary in both autonomy (team mean) and satisfaction
+# This creates a spurious correlation if we ignore nesting
+
+set.seed(5678)
+n_sims <- 1000
+p_values_ols <- numeric(n_sims)
+p_values_mlm <- numeric(n_sims)
+
+for (sim in 1:n_sims) {
+  # Generate teams with their characteristics
+  sim_teams <- tibble(
+    team_id = 1:50,
+    team_size = sample(8:15, 50, replace = TRUE),
+    team_mean_autonomy = rnorm(50, mean = 4.5, sd = 0.5),
+    team_u0j = rnorm(50, mean = 0, sd = sqrt(0.6))
+  )
+
+  # Generate employees
+  sim_employees <- sim_teams %>%
+    slice(rep(1:50, sim_teams$team_size)) %>%
+    arrange(team_id) %>%
+    group_by(team_id) %>%
+    mutate(
+      autonomy = rnorm(n(), mean = team_mean_autonomy[1], sd = 0.8),
+      autonomy = pmin(pmax(autonomy, 1), 7),
+
+      # Satisfaction depends ONLY on team mean autonomy (between effect),
+      # NOT on individual autonomy (no within effect)
+      job_satisfaction = 3.5 +
+                         0.6 * team_mean_autonomy[1] +
+                         team_u0j[1] +
+                         rnorm(n(), mean = 0, sd = sqrt(0.8)),
+      job_satisfaction = pmin(pmax(job_satisfaction, 1), 7)
+    ) %>%
+    ungroup()
+
+  # Fit OLS
+  ols_fit <- lm(job_satisfaction ~ autonomy, data = sim_employees)
+  p_values_ols[sim] <- summary(ols_fit)$coefficients[2, 4]
+
+  # Fit MLM
+  mlm_fit <- lmer(job_satisfaction ~ autonomy + (1 | team_id), data = sim_employees)
+  p_values_mlm[sim] <- summary(mlm_fit)$coefficients[2, 5]
+}
+
+# Count Type I errors (rejections at alpha = 0.05)
+type1_ols <- mean(p_values_ols < 0.05)
+type1_mlm <- mean(p_values_mlm < 0.05)
+
+cat("Type I Error Rates (Nominal alpha = 0.05):\n")
+cat("OLS (ignoring nesting):", round(type1_ols, 3), "\n")
+cat("MLM (accounting for nesting):", round(type1_mlm, 3), "\n")
+cat("\nOLS Type I error is", round(type1_ols / 0.05, 1), "times higher than nominal!\n")
+```
+
+**This is striking**: OLS commits Type I errors at a rate of roughly 20-30%, compared to the nominal 5% we expect. We're falsely discovering effects that don't exist, just because we ignored the nested structure.
+
+The MLM approach, by contrast, respects the data structure and maintains the correct error rate near 5%. This is not a small difference—it's the difference between sound inference and producing unreliable science.
+
+# The Ecological Fallacy and Atomistic Fallacy
+
+Ignoring nesting can also lead to substantive misinterpretations. Two cautionary tales:
+
+## The Ecological Fallacy
+
+The **ecological fallacy** occurs when you infer individual-level relationships from group-level data, or when you fail to separate group-level effects from individual-level effects.
+
+*Example*: Suppose we find that teams with higher average autonomy have higher average job satisfaction (team level). We might conclude: "Autonomy increases satisfaction." But we've only observed a between-team effect. It's entirely possible that *within* teams, more autonomous individuals are actually *less* satisfied (perhaps because autonomy brings responsibility and stress). The team-level pattern could emerge because teams with naturally happier people also give them more autonomy.
+
+Let's demonstrate this with code:
+
+```{r ecological-fallacy}
+# Create data where within and between effects differ
+set.seed(9012)
+n_teams_demo <- 30
+n_per_team <- 15
+data_eco <- tibble(
+  team_id = rep(1:n_teams_demo, each = n_per_team),
+  team_autonomy_mean = rep(rnorm(n_teams_demo, 4, 1), each = n_per_team),
+  autonomy = rnorm(n_teams_demo * n_per_team, mean = 0, sd = 1)
+) %>%
+  mutate(
+    autonomy = autonomy + team_autonomy_mean,  # Add team mean to individual scores
+    autonomy = pmin(pmax(autonomy, 1), 7),
+
+    # Within-team effect: NEGATIVE! Autonomy within a team relates to LOWER satisfaction.
+    # Between-team effect: POSITIVE! Teams with more autonomy (on average) have higher satisfaction.
+    job_satisfaction = 4 +
+                       (-0.3) * scale(autonomy)[,1] +  # Within-team: negative
+                       0.7 * team_autonomy_mean +        # Between-team: positive
+                       rnorm(n_teams_demo * n_per_team, 0, 0.5)
+  )
+
+# Aggregate to team level
+team_agg <- data_eco %>%
+  group_by(team_id) %>%
+  summarize(
+    autonomy = mean(autonomy),
+    job_satisfaction = mean(job_satisfaction),
+    .groups = 'drop'
+  )
+
+# OLS on aggregated data (ecological fallacy)
+ols_eco <- lm(job_satisfaction ~ autonomy, data = team_agg)
+cat("Regression of team-level satisfaction on team-level autonomy:\n")
+print(summary(ols_eco))
+
+cat("\n")
+
+# OLS on individual data without accounting for nesting
+ols_ind <- lm(job_satisfaction ~ autonomy, data = data_eco)
+cat("OLS on individual data (ignoring teams):\n")
+print(summary(ols_ind))
+```
+
+Notice the coefficient on autonomy flips sign or changes magnitude between the aggregated and individual analyses. This is the ecological fallacy in action: the group-level relationship doesn't reflect the individual-level relationship. When you aggregate and lose the individual variation, you're potentially drawing the wrong conclusions.
+
+## The Atomistic Fallacy
+
+The **atomistic fallacy** is the inverse: inferring group-level processes from individual-level associations. An effect that's significant at the individual level may not hold at the group level, and vice versa.
+
+*Example*: You find that individual autonomy predicts satisfaction across all employees. You conclude: "Teams where we increase autonomy will report higher satisfaction." But if autonomy is really just a proxy for team climate—and team climate is what drives satisfaction—then randomly giving individuals autonomy *without* improving team climate might have no effect. The individual-level correlation exists because high-autonomy people self-select into high-climate teams.
+
+These fallacies remind us why **level of analysis matters** in organizational research. MLM allows us to estimate effects at each level separately and to distinguish within-group from between-group effects, avoiding both fallacies.
+
+# Visualizing Nested Data
+
+Let's create visualizations that make the nested structure apparent:
+
+```{r spaghetti-plot}
+# Spaghetti plot: job satisfaction by autonomy, separate lines for each team
+p1 <- ggplot(employees, aes(x = autonomy, y = job_satisfaction, group = team_id)) +
+  geom_point(alpha = 0.3, size = 1) +
+  geom_smooth(method = "lm", se = FALSE, alpha = 0.5, size = 0.5, color = "steelblue") +
+  labs(
+    title = "Spaghetti Plot: Job Satisfaction vs. Autonomy by Team",
+    subtitle = "Each blue line is a separate team's within-team relationship",
+    x = "Autonomy (1-7 scale)",
+    y = "Job Satisfaction (1-7 scale)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+print(p1)
+```
+
+This spaghetti plot reveals several important features:
+
+1. **Individual variation within teams**: The scatter of points within each line shows how much employees in the same team differ from each other in autonomy and satisfaction. This is Level-1 (within-team) variation.
+
+2. **Team-level differences**: The lines themselves differ in intercept (some teams are generally more satisfied) and potentially in slope (the relationship might differ across teams). This is Level-2 (between-team) variation.
+
+3. **Non-independence**: Points are clustered by team. Employees in the same team tend to have similar satisfaction levels, even after accounting for autonomy. This clustering is precisely what OLS ignores.
+
+Now let's look at team-level boxplots:
+
+```{r team-boxplots}
+# Boxplots of job satisfaction by team (sorted by team mean)
+team_means <- employees %>%
+  group_by(team_id) %>%
+  summarize(mean_satisfaction = mean(job_satisfaction), .groups = 'drop') %>%
+  arrange(mean_satisfaction) %>%
+  mutate(team_id_ordered = factor(team_id, levels = team_id))
+
+employees_ordered <- employees %>%
+  mutate(team_id_ordered = factor(team_id, levels = levels(team_means$team_id_ordered)))
+
+p2 <- ggplot(employees_ordered, aes(x = team_id_ordered, y = job_satisfaction)) +
+  geom_boxplot(fill = "lightblue", alpha = 0.7) +
+  geom_jitter(width = 0.2, alpha = 0.2, size = 1) +
+  labs(
+    title = "Job Satisfaction by Team (Sorted by Team Mean)",
+    subtitle = "Wide variation between teams despite similar individual distributions",
+    x = "Team ID (sorted by mean satisfaction)",
+    y = "Job Satisfaction (1-7 scale)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, size = 6),
+        panel.grid.major.x = element_blank())
+
+print(p2)
+```
+
+The boxplot shows clearly that teams differ substantially in average job satisfaction. Some teams cluster around 3.5, others around 5 or higher. This **between-team variance** is exactly what MLM will help us understand and model. If teams were homogeneous (all had the same distribution), there would be little reason to model them separately.
+
+Finally, let's visualize the distribution of team-level characteristics:
+
+```{r team-distributions}
+team_summary <- employees %>%
+  group_by(team_id) %>%
+  summarize(
+    mean_satisfaction = mean(job_satisfaction),
+    mean_autonomy = mean(autonomy),
+    team_climate = first(team_climate),
+    team_size = first(team_size),
+    .groups = 'drop'
+  )
+
+p3 <- ggplot(team_summary, aes(x = team_climate, y = mean_satisfaction)) +
+  geom_point(aes(size = team_size), alpha = 0.6, color = "darkgreen") +
+  geom_smooth(method = "lm", se = TRUE, color = "red", fill = "red", alpha = 0.2) +
+  labs(
+    title = "Team-Level Relationship: Team Climate and Mean Satisfaction",
+    subtitle = "Bubble size = team size. Teams with better climate report higher satisfaction.",
+    x = "Team Climate (1-7 scale)",
+    y = "Mean Job Satisfaction"
+  ) +
+  theme_minimal()
+
+print(p3)
+```
+
+This scatter plot at the team level reveals the between-team structure. Teams with higher team climate tend to report higher average satisfaction. This is precisely the kind of **team-level relationship** that MLM helps us estimate properly, separate from within-team individual effects.
+
+# Looking Ahead: What MLM Offers
+
+Traditional OLS regression is a single-level tool. MLM extends this framework to accommodate multiple levels of structure:
+
+1. **Proper uncertainty**: MLM adjusts standard errors to account for non-independence, preventing Type I error inflation and ensuring valid hypothesis tests.
+
+2. **Variance decomposition**: We can separate how much variance in our outcome is due to individuals versus teams, via the Intraclass Correlation Coefficient (ICC). This answers: "How much clustering is there?"
+
+3. **Separate effects at each level**: We can estimate how individual-level predictors (like autonomy) differ from team-level predictors (like team climate) in their effects on outcomes.
+
+4. **Random variation in slopes**: We can model not just different intercepts across teams, but different *relationships*—some teams might show a strong autonomy-satisfaction link, others a weak one.
+
+5. **Principled inference**: Because we're modeling the actual data structure, our inferences are valid and our Type I error rates stay at nominal levels.
+
+In the coming weeks, we'll develop each of these tools. Next week, we'll start with the **unconditional model** (null model), which shows us how to partition variance between levels. After that, we'll add predictors, then random slopes, then make careful decisions about how to center our variables.
+
+# Try It Yourself Exercises
+
+## Exercise 1: Explore the Data
+Extend the code above to examine the distribution of **tenure** across teams. Do some teams have longer-tenured employees than others? Create a spaghetti plot showing tenure versus job_satisfaction. What do you observe about how tenure relates to satisfaction within and between teams?
+
+## Exercise 2: Replicate the Type I Error Simulation
+Modify the Type I error simulation to use a different sample size (e.g., 20 teams instead of 50, or 8 employees per team instead of varying sizes). How does sample size affect Type I error inflation? Is inflation worse with fewer teams or fewer people per team?
+
+## Exercise 3: Design a Data-Generating Process
+Write code to simulate organizational data with a *different* structure:
+- 100 employees in 10 teams
+- A between-team effect of team_size on performance (larger teams have lower performance)
+- A within-team effect of tenure on performance (more senior employees perform better)
+- Explain why the order of effects (who causes what) matters for your substantive question.
+
+## Exercise 4: Visualize the Ecological Fallacy
+Using the `data_eco` tibble created above, fit:
+1. A simple OLS model predicting satisfaction from autonomy (ignoring teams)
+2. An MLM model that accounts for teams
+3. Compare the coefficients to the team-aggregated OLS results. Which is larger? What does this tell you about the nature of the relationship?
+
+## Exercise 5: Critical Thinking
+A manager tells you: "I found that in our survey, satisfaction is strongly correlated with autonomy. So if I increase autonomy for high performers, satisfaction will increase." Using what you've learned about nesting and ecological fallacies, what questions would you ask before accepting this conclusion? How would MLM help you answer those questions?
+
+---
+
+**Key Takeaways:**
+
+- Organizational data are typically nested, violating the independence assumption of OLS.
+- Ignoring nesting leads to biased standard errors, inflated Type I error rates, and potentially misleading inferences about which effects are real.
+- The ecological fallacy and atomistic fallacy remind us that group-level and individual-level effects are conceptually and statistically distinct.
+- Visualizing nested data through spaghetti plots and boxplots makes the structure obvious and motivates the need for specialized models.
+- MLM is the principled framework for handling nested data by explicitly modeling variance at each level and avoiding the pitfalls of single-level approaches.

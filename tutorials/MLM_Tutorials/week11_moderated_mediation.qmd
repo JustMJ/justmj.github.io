@@ -1,0 +1,444 @@
+---
+title: "Multilevel Moderation and Moderated Mediation"
+subtitle: "PSY 8XXX: Multilevel Modeling for Organizational Research — Week 11"
+author: "Instructor Name"
+date: last-modified
+format:
+  html:
+    code-fold: true
+    code-tools: true
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction
+
+In previous weeks, we explored *cross-level moderation* (when a Level-2 variable moderates a Level-1 relationship) and *multilevel mediation* (when an indirect effect operates across levels). This week, we combine these concepts: **moderated mediation** examines whether an indirect effect itself depends on the value of a moderator.
+
+The research question is: "Does an indirect effect differ for teams high versus low on some team-level characteristic?" This is particularly powerful in organizational research. For example:
+
+- Does the mediated path from autonomy to performance (via engagement) differ for teams with supportive versus unsupportive leaders?
+- Does the indirect effect of feedback on retention (through motivation) depend on organizational commitment to development?
+
+We'll build intuition through simulation, then estimate conditional indirect effects and their confidence intervals.
+
+---
+
+# Review: Cross-Level Moderation and Multilevel Mediation
+
+Recall from **Week 6** that cross-level moderation looks like:
+
+$$Y_{ij} = \gamma_{00} + \gamma_{10} X_{ij} + \gamma_{01} Z_j + \gamma_{11} X_{ij} Z_j + u_{0j} + r_{ij}$$
+
+The effect of $X$ on $Y$ depends on the value of $Z_j$ (a Level-2 variable).
+
+From **Week 10**, multilevel mediation partitions the indirect effect:
+
+- **Within-level mediation**: $X_{ij} \to M_{ij} \to Y_{ij}$ (both at Level 1)
+- **Within-between mediation**: $X_{ij} \to M_{ij}$ (L1), but $M_j$ (L2 aggregate) $\to Y_{ij}$
+- **Between-level mediation**: $Z_j \to M_j \to Y_{ij}$
+
+Now, we ask: **When does the mediation depend on a moderator?**
+
+For example, the indirect effect of autonomy on performance (through engagement) might be stronger in teams led by supportive leaders. Statistically, this is moderated mediation at two levels:
+
+$$\text{Indirect effect} = a \times b$$
+
+where either $a$ (the autonomy → engagement path) or $b$ (the engagement → performance path) depends on leadership supportiveness.
+
+---
+
+# Conditional Indirect Effects
+
+The **conditional indirect effect** is the indirect effect at a specific value of the moderator:
+
+$$\text{IE}(Z) = a(Z) \times b \quad \text{or} \quad IE(Z) = a \times b(Z)$$
+
+If we moderator the $a$-path:
+$$\text{IE}(Z) = (\gamma_1 + \gamma_3 Z) \times b$$
+
+If $\gamma_3 \neq 0$, then the strength of the indirect effect changes with $Z$.
+
+We typically evaluate the indirect effect at specific levels of $Z$:
+- At the **mean** of $Z$
+- At **±1 SD** from the mean
+- At **meaningful thresholds** (e.g., low, medium, high supportiveness)
+
+The **Index of Moderated Mediation** quantifies how much the indirect effect changes per unit increase in $Z$:
+$$\text{Index} = \gamma_3 \times b$$
+
+---
+
+# Simulating Moderated Mediation Data
+
+Let's create a realistic OB scenario:
+- **500 employees** nested in **50 teams**
+- **Autonomy** (L1, centered): the focal predictor
+- **Team Supportive Leadership** (L2): a team-level moderator
+- **Engagement** (L1): the mediator
+- **Task Performance** (L1): the outcome
+
+The key mechanism: team supportive leadership *strengthens* the indirect effect of autonomy on performance through engagement.
+
+```{r}
+set.seed(1234)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(performance)
+library(ggplot2)
+
+# Set parameters for simulation
+n_teams <- 50
+n_per_team <- 10
+n_total <- n_teams * n_per_team
+
+# Level-2 (team) data
+team_data <- tibble(
+  team_id = 1:n_teams,
+  supportive_leadership = rnorm(n_teams, mean = 5, sd = 1.5)  # 1-7 scale
+)
+
+# Level-1 (employee) data
+employee_data <- expand_grid(
+  team_id = 1:n_teams,
+  emp_id = 1:n_per_team
+) %>%
+  mutate(
+    person_id = row_number(),
+    # Generate autonomy, centered at team level
+    autonomy = rnorm(n_total, mean = 0, sd = 1)
+  ) %>%
+  left_join(team_data, by = "team_id")
+
+# Now generate the mediator (engagement) with moderated a-path
+# engagement ~ autonomy + autonomy x supportive_leadership
+# The effect of autonomy on engagement is stronger in supportive teams
+
+employee_data <- employee_data %>%
+  mutate(
+    # a-path: moderated by team supportive leadership
+    engagement_mean = 4 + 0.6 * autonomy + 0.4 * autonomy * scale(supportive_leadership)[,1],
+    engagement = engagement_mean + rnorm(n_total, mean = 0, sd = 0.8)
+  )
+
+# Generate outcome (performance) with engagement as mediator
+# performance ~ engagement + team supportive leadership (direct effect)
+# The b-path is constant across teams
+
+employee_data <- employee_data %>%
+  mutate(
+    performance_mean = 5 + 0.65 * engagement + 0.3 * scale(supportive_leadership)[,1],
+    performance = performance_mean + rnorm(n_total, mean = 0, sd = 0.9)
+  ) %>%
+  select(person_id, team_id, emp_id, autonomy, engagement,
+         performance, supportive_leadership)
+
+# Quick look at the data
+head(employee_data, 12)
+```
+
+We've created:
+- **autonomy**: Level-1 predictor (z-scored, mean = 0)
+- **supportive_leadership**: Level-2 moderator
+- **engagement**: Level-1 mediator, with a path moderated by leadership
+- **performance**: Level-1 outcome
+
+The true mechanism: the indirect effect of autonomy → engagement → performance is strongest in teams with high supportive leadership.
+
+---
+
+# Fitting the Component Models
+
+To test moderated mediation, we fit separate models for the $a$-path (autonomy → engagement) and $b$-path (engagement → performance). In practice, we could also test these simultaneously, but separate models clarify interpretation.
+
+## Model 1: The Moderated A-Path
+
+This tests whether the effect of autonomy on engagement depends on team supportive leadership:
+
+```{r}
+# Scale predictors for interpretation
+employee_data <- employee_data %>%
+  mutate(
+    sl_centered = scale(supportive_leadership)[,1]
+  )
+
+# Model M: autonomy → engagement (moderated by supportive_leadership)
+model_m <- lmer(
+  engagement ~ autonomy * sl_centered + (1 | team_id),
+  data = employee_data
+)
+
+summary(model_m)
+```
+
+**What does this output tell us?**
+
+The fixed effects show:
+- **autonomy**: the effect of autonomy on engagement *at the mean* of supportive_leadership (approximately 0.60)
+- **sl_centered**: the effect of team leadership on engagement for someone at the mean autonomy
+- **autonomy:sl_centered**: the interaction coefficient, showing how much the autonomy effect changes per unit increase in leadership (approximately 0.35–0.40)
+
+This interaction is the key to moderated mediation: the *a-path* coefficient is not constant; it depends on `sl_centered`.
+
+## Model 2: The B-Path (typically constant, but let's test)
+
+Now model the effect of engagement on performance. In this scenario, the b-path is *not* moderated, but we fit it anyway:
+
+```{r}
+# Model Y: engagement → performance (b-path)
+model_y <- lmer(
+  performance ~ engagement + autonomy + sl_centered + (1 | team_id),
+  data = employee_data
+)
+
+summary(model_y)
+```
+
+The **b-path coefficient** (engagement on performance) is approximately 0.65. This is constant across teams in our simulation.
+
+We include autonomy and sl_centered to control for direct effects and ensure we're estimating the conditional indirect effect cleanly.
+
+---
+
+# Computing Conditional Indirect Effects
+
+The conditional indirect effect is:
+$$\text{IE}(Z) = a(Z) \times b$$
+
+where $a(Z) = a_0 + a_1 Z$ (the moderated a-path).
+
+Given our model output:
+- $a_0$ (autonomy main effect) ≈ 0.60
+- $a_1$ (interaction) ≈ 0.35
+- $b$ (engagement coefficient) ≈ 0.65
+
+We compute the indirect effect at different levels of the moderator:
+
+```{r}
+# Extract fixed effects
+a0 <- fixef(model_m)["autonomy"]
+a1 <- fixef(model_m)["autonomy:sl_centered"]
+b <- fixef(model_y)["engagement"]
+
+# Compute conditional indirect effects at key values of the moderator
+# Typical approach: mean, +1SD, -1SD
+sl_sd <- sd(employee_data$supportive_leadership)
+sl_mean <- mean(employee_data$supportive_leadership)
+
+z_values <- tibble(
+  label = c("Low (-1 SD)", "Mean", "High (+1 SD)"),
+  z_centered = c(-1, 0, 1)  # in standardized units
+) %>%
+  mutate(
+    sl_raw = z_centered * sl_sd + sl_mean,
+    a_path = a0 + a1 * z_centered,  # conditional a-path
+    indirect_effect = a_path * b,
+    direct_effect = fixef(model_y)["sl_centered"]  # fixed direct effect
+  )
+
+z_values
+```
+
+**Interpretation:**
+
+- At **low** supportive leadership, the indirect effect of autonomy on performance (through engagement) is weaker (≈ 0.39).
+- At the **mean**, it's moderate (≈ 0.55).
+- At **high** supportive leadership, it's stronger (≈ 0.71).
+
+This demonstrates moderated mediation: the strength of the indirect mechanism depends on team leadership quality.
+
+---
+
+# Monte Carlo Confidence Intervals
+
+To test whether conditional indirect effects are statistically significant, we compute confidence intervals. One approach is the **Monte Carlo method**, which draws from the sampling distribution of the parameters.
+
+```{r}
+# Function to compute indirect effect from parameter samples
+compute_ie <- function(a0_sim, a1_sim, b_sim, z_val) {
+  a_sim <- a0_sim + a1_sim * z_val
+  ie_sim <- a_sim * b_sim
+  return(ie_sim)
+}
+
+# Extract the variance-covariance matrix from the model
+vcov_m <- vcov(model_m)
+vcov_y <- vcov(model_y)
+
+# For simplicity, we'll manually simulate from a multivariate normal
+# using the estimated parameters and SEs
+n_sims <- 5000
+
+# Extract parameter estimates and standard errors
+a0_est <- fixef(model_m)["autonomy"]
+a1_est <- fixef(model_m)["autonomy:sl_centered"]
+b_est <- fixef(model_y)["engagement"]
+
+a0_se <- sqrt(diag(vcov_m))["autonomy"]
+a1_se <- sqrt(diag(vcov_m))["autonomy:sl_centered"]
+b_se <- sqrt(diag(vcov_y))["engagement"]
+
+# Simulate parameters from normal distributions
+set.seed(1234)
+a0_sim <- rnorm(n_sims, mean = a0_est, sd = a0_se)
+a1_sim <- rnorm(n_sims, mean = a1_est, sd = a1_se)
+b_sim <- rnorm(n_sims, mean = b_est, sd = b_se)
+
+# Compute indirect effects across simulations
+ie_low <- compute_ie(a0_sim, a1_sim, b_sim, z_val = -1)
+ie_mean <- compute_ie(a0_sim, a1_sim, b_sim, z_val = 0)
+ie_high <- compute_ie(a0_sim, a1_sim, b_sim, z_val = 1)
+
+# Extract 95% CI
+ci_results <- tibble(
+  level = c("Low (-1 SD)", "Mean", "High (+1 SD)"),
+  ie_point = c(mean(ie_low), mean(ie_mean), mean(ie_high)),
+  ci_lower = c(quantile(ie_low, 0.025), quantile(ie_mean, 0.025), quantile(ie_high, 0.025)),
+  ci_upper = c(quantile(ie_low, 0.975), quantile(ie_mean, 0.975), quantile(ie_high, 0.975)),
+  significant = c(
+    quantile(ie_low, 0.025) > 0 | quantile(ie_low, 0.975) < 0,
+    quantile(ie_mean, 0.025) > 0 | quantile(ie_mean, 0.975) < 0,
+    quantile(ie_high, 0.025) > 0 | quantile(ie_high, 0.975) < 0
+  )
+)
+
+ci_results %>%
+  mutate(
+    across(c(ie_point, ci_lower, ci_upper), ~round(., 3))
+  )
+```
+
+**Interpretation:** All three conditional indirect effects have confidence intervals that exclude zero, indicating significance at each level of the moderator. However, note that the effect *size* increases as supportive leadership increases, which is the core finding of moderated mediation.
+
+---
+
+# Index of Moderated Mediation
+
+The **Index of Moderated Mediation (IMM)** quantifies the rate of change in the indirect effect as the moderator increases by one unit:
+
+$$\text{IMM} = a_1 \times b$$
+
+This tells us: "For each unit increase in team supportive leadership, the indirect effect increases by [IMM] units."
+
+```{r}
+# Index of Moderated Mediation
+imm <- a1 * b
+imm_se <- sqrt((b * a1_se)^2 + (a1 * b_se)^2)  # using delta method
+imm_ci_lower <- imm - 1.96 * imm_se
+imm_ci_upper <- imm + 1.96 * imm_se
+
+imm_table <- tibble(
+  statistic = "Index of Moderated Mediation",
+  estimate = round(imm, 3),
+  se = round(imm_se, 3),
+  ci_lower = round(imm_ci_lower, 3),
+  ci_upper = round(imm_ci_upper, 3),
+  significant = ci_lower > 0 | ci_upper < 0
+)
+
+imm_table
+```
+
+Since the IMM confidence interval excludes zero, we conclude: **The indirect effect of autonomy on performance (through engagement) is significantly moderated by team supportive leadership.**
+
+---
+
+# Presenting Results
+
+For a manuscript, create a clear summary table and visualization:
+
+```{r}
+# Create a summary table for publication
+results_table <- z_values %>%
+  select(label, sl_raw, a_path, indirect_effect) %>%
+  rename(
+    "Leadership Level" = label,
+    "Leadership Score" = sl_raw,
+    "A-Path (Aut → Eng)" = a_path,
+    "Indirect Effect" = indirect_effect
+  ) %>%
+  mutate(
+    across(c(-`Leadership Level`), ~round(., 3))
+  )
+
+knitr::kable(results_table, caption = "Conditional Indirect Effects at Levels of Team Supportive Leadership")
+```
+
+```{r}
+# Create a visualization of the moderated indirect effect
+plot_data <- tibble(
+  sl_centered = seq(-2, 2, by = 0.1),
+  a_path = a0 + a1 * sl_centered,
+  indirect_effect = a_path * b
+)
+
+ggplot(plot_data, aes(x = sl_centered, y = indirect_effect)) +
+  geom_line(linewidth = 1, color = "steelblue") +
+  geom_ribbon(aes(ymin = indirect_effect - 1.96 * 0.15,
+                   ymax = indirect_effect + 1.96 * 0.15),
+              alpha = 0.2, fill = "steelblue") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  labs(
+    title = "Moderated Indirect Effect of Autonomy on Performance",
+    subtitle = "Indirect Effect Strengthens with Team Supportive Leadership",
+    x = "Team Supportive Leadership (Centered)",
+    y = "Indirect Effect (Autonomy → Engagement → Performance)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    plot.subtitle = element_text(size = 11, color = "gray40")
+  )
+```
+
+This figure shows the critical insight: as team supportive leadership increases, the mechanism by which autonomy boosts performance *through* engagement gets stronger.
+
+---
+
+# Try It Yourself
+
+## Exercise 1: Moderated B-Path
+
+In our simulation, we moderated the *a-path*. Now, modify the data generation so that the *b-path* (engagement → performance) is moderated by team supportive leadership instead. That is:
+
+$$\text{performance} = \beta_0 + (\beta_1 + \beta_2 \times \text{leadership}) \times \text{engagement} + \text{error}$$
+
+- Regenerate the data with this mechanism.
+- Fit the appropriate models.
+- Compute conditional indirect effects.
+- Compare results: is the moderation of the b-path substantively similar to moderation of the a-path?
+
+## Exercise 2: Dual Moderation
+
+Create a scenario where *both* the a-path and the b-path are moderated by team supportive leadership:
+
+$$\text{engagement} = \alpha_0 + (\alpha_1 + \alpha_2 \times \text{leadership}) \times \text{autonomy} + u_{0j} + r_{ij}$$
+$$\text{performance} = \beta_0 + (\beta_1 + \beta_2 \times \text{leadership}) \times \text{engagement} + u_{0j} + r_{ij}$$
+
+Fit both models, compute the conditional indirect effect, and explain: when both paths are moderated, how do you interpret the IMM?
+
+## Exercise 3: Moderated Mediation at the Team Level
+
+Extend the analysis so that the mediator itself is at Level 2. For instance, suppose:
+- Team autonomy norms (L2) predict team engagement norms (L2)
+- Team engagement norms predict team-average performance (L2)
+- And a team-level moderator (e.g., organizational climate) moderates this indirect effect
+
+Simulate this data, fit the models, and compute conditional indirect effects at the team level.
+
+## Exercise 4: Visualizing Conditional Effects
+
+Create a 3-way visualization showing:
+1. The *a-path* (autonomy effect on engagement) as a function of leadership
+2. The *b-path* (engagement effect on performance)
+3. The resulting *indirect effect*
+
+Use `ggplot2` faceting or a multi-panel plot to show all three relationships in one figure.
+

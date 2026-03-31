@@ -1,0 +1,470 @@
+---
+title: "Model Comparison, Fit, and Estimation Methods in MLM"
+subtitle: "PSY 8XXX: Multilevel Modeling for Organizational Research — Week 7"
+author: "Instructor"
+date: last-modified
+format:
+  html:
+    code-fold: true
+    code-tools: true
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction
+
+How do you know if your multilevel model is *good*? And if you fit multiple models—null, random intercept, random slope, with predictors—how do you choose among them?
+
+This is where **model comparison** comes in. Unlike single-level regression, multilevel models have multiple reasonable specifications depending on whether you want to:
+
+- Estimate effects while accounting for clustering (compare to naive OLS)
+- Decide if a slope should be random or fixed
+- Test whether adding a predictor improves fit
+- Choose between competing theoretical models
+
+In this tutorial, we'll master the practical tools: likelihood ratio tests, information criteria (AIC/BIC), pseudo-R² measures, and a real workflow for building and comparing models step by step.
+
+# ML vs. REML: When to Use Each
+
+Multilevel models can be estimated two ways: **Maximum Likelihood (ML)** and **Restricted Maximum Likelihood (REML)**.
+
+## The Conceptual Difference
+
+- **ML**: Estimates both fixed effects and random effects variances simultaneously. More biased for random effects when sample size is small, but allows model comparison via likelihood ratio tests.
+- **REML**: Accounts for the degrees of freedom lost in estimating fixed effects before estimating variances. Less biased for variance components, but cannot compare models that differ in fixed effects.
+
+## Practical Rule
+
+- **Use REML for final inference** on variance components and random effects
+- **Use ML for model comparison** (comparing fixed effect structures)
+
+Let's demonstrate with data:
+
+```{r setup}
+set.seed(1234)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(performance)
+library(ggplot2)
+
+# Simulate organizational data
+n_teams <- 50
+n_per_team <- 10
+n_total <- n_teams * n_per_team
+
+teams <- tibble(
+  team_id = 1:n_teams,
+  team_size = sample(8:15, n_teams, replace = TRUE),
+  team_climate = rnorm(n_teams, mean = 5, sd = 1.2),
+  leader_support = rnorm(n_teams, mean = 5.5, sd = 1)
+)
+
+employees <- expand_grid(
+  team_id = 1:n_teams,
+  emp_within_team = 1:10
+) %>%
+  left_join(teams, by = "team_id") %>%
+  mutate(
+    employee_id = row_number(),
+    autonomy = rnorm(n_total, mean = 5, sd = 1.5),
+    job_complexity = rnorm(n_total, mean = 4.5, sd = 1.2),
+    tenure_years = pmax(rnorm(n_total, mean = 4, sd = 3), 0.5),
+    autonomy_c = autonomy - mean(autonomy),
+    team_climate_c = team_climate - mean(team_climate),
+    job_satisfaction = 3.5 +
+      0.6 * autonomy_c +
+      0.4 * team_climate_c +
+      0.35 * autonomy_c * team_climate_c +
+      0.15 * job_complexity +
+      0.05 * tenure_years +
+      rnorm(n_total, 0, 1.2),
+    job_satisfaction = pmin(pmax(job_satisfaction, 1), 7)
+  )
+```
+
+Now let's fit the same model with ML and REML:
+
+```{r ml-vs-reml}
+# Fit with ML
+model_ml <- lmer(
+  job_satisfaction ~ autonomy_c + job_complexity + tenure_years + (1 + autonomy_c | team_id),
+  data = employees,
+  REML = FALSE
+)
+
+# Fit with REML
+model_reml <- lmer(
+  job_satisfaction ~ autonomy_c + job_complexity + tenure_years + (1 + autonomy_c | team_id),
+  data = employees,
+  REML = TRUE
+)
+
+# Compare random effects estimates
+comparison <- tibble(
+  Component = c("σ²_u0 (intercept)", "σ²_u1 (autonomy slope)", "σ² (residual)"),
+  ML = c(
+    attr(VarCorr(model_ml)$team_id, "stddev")[1]^2,
+    attr(VarCorr(model_ml)$team_id, "stddev")[2]^2,
+    sigma(model_ml)^2
+  ),
+  REML = c(
+    attr(VarCorr(model_reml)$team_id, "stddev")[1]^2,
+    attr(VarCorr(model_reml)$team_id, "stddev")[2]^2,
+    sigma(model_reml)^2
+  )
+)
+
+print(comparison)
+
+# Fixed effects are identical (as they should be for the same model)
+cat("\nFixed effect of autonomy:\n")
+cat("ML: ", fixef(model_ml)["autonomy_c"], "\n")
+cat("REML: ", fixef(model_reml)["autonomy_c"], "\n")
+```
+
+**Observation**: The fixed effects are identical, but variance components differ slightly. With 500 observations, the difference is small, but with smaller samples, REML would be noticeably less biased.
+
+**Decision rule**: For this tutorial, we'll use ML when comparing models, then report final estimates from REML.
+
+# Deviance and Likelihood Ratio Tests
+
+The most direct way to compare nested models is the **likelihood ratio test**. If Model A is nested in Model B (B has all of A's terms plus more), you can test whether the additional terms significantly improve fit.
+
+## The Test Statistic
+
+$$LR = -2(\log L_A - \log L_B) = -2(LL_A - LL_B)$$
+
+Under the null (Model A is correct), LR follows a χ² distribution with *df* = difference in number of parameters.
+
+## Workflow
+
+Let's build models incrementally and compare:
+
+```{r model-building}
+# Model 1: Null model (random intercepts only)
+m1_null <- lmer(
+  job_satisfaction ~ 1 + (1 | team_id),
+  data = employees,
+  REML = FALSE
+)
+
+# Model 2: Add random slope for autonomy
+m2_random_slope <- lmer(
+  job_satisfaction ~ autonomy_c + (1 + autonomy_c | team_id),
+  data = employees,
+  REML = FALSE
+)
+
+# Model 3: Add fixed effects (L1 controls)
+m3_controls <- lmer(
+  job_satisfaction ~ autonomy_c + job_complexity + tenure_years +
+    (1 + autonomy_c | team_id),
+  data = employees,
+  REML = FALSE
+)
+
+# Model 4: Add L2 predictor
+m4_l2_pred <- lmer(
+  job_satisfaction ~ autonomy_c + job_complexity + tenure_years + team_climate_c +
+    (1 + autonomy_c | team_id),
+  data = employees,
+  REML = FALSE
+)
+
+# Model 5: Add cross-level interaction
+m5_interaction <- lmer(
+  job_satisfaction ~ autonomy_c * team_climate_c + job_complexity + tenure_years +
+    (1 + autonomy_c | team_id),
+  data = employees,
+  REML = FALSE
+)
+
+# Compare models pairwise
+cat("=== Model Comparisons ===\n\n")
+
+cat("M1 vs M2: Does random slope for autonomy improve fit?\n")
+print(anova(m1_null, m2_random_slope))
+
+cat("\nM2 vs M3: Do L1 controls improve fit?\n")
+print(anova(m2_random_slope, m3_controls))
+
+cat("\nM3 vs M4: Does L2 predictor (team climate) improve fit?\n")
+print(anova(m3_controls, m4_l2_pred))
+
+cat("\nM4 vs M5: Does cross-level interaction improve fit?\n")
+print(anova(m4_l2_pred, m5_interaction))
+```
+
+**Interpretation of the LR test output:**
+
+- `Df` = change in number of parameters
+- `Chisq` = the LR test statistic
+- `Pr(>Chisq)` = p-value
+
+A significant p-value (typically p < .05) means the more complex model fits significantly better. The interaction in M5 likely shows significance because we generated the data *with* an interaction.
+
+# Information Criteria: AIC and BIC
+
+Likelihood ratio tests work for nested models, but what if you want to compare **non-nested models** (e.g., different predictors)? Or what if you want a measure that penalizes complexity?
+
+Information criteria do both:
+
+$$\text{AIC} = -2 \log L + 2k$$
+$$\text{BIC} = -2 \log L + k \log(n)$$
+
+Where k = number of parameters and n = number of observations.
+
+**Interpretation**: Lower AIC/BIC is better. The penalty term discourages overfitting.
+
+- **AIC**: Gentler penalty; better for prediction
+- **BIC**: Harsher penalty; better for model selection when sample size is large
+
+Let's compare all five models:
+
+```{r information-criteria}
+models <- list(
+  "M1: Null" = m1_null,
+  "M2: Random Slope" = m2_random_slope,
+  "M3: + L1 Controls" = m3_controls,
+  "M4: + L2 Predictor" = m4_l2_pred,
+  "M5: + Cross-Level Interaction" = m5_interaction
+)
+
+ic_table <- tibble(
+  Model = names(models),
+  Parameters = sapply(models, function(x) attr(logLik(x), "df")),
+  LogLik = sapply(models, logLik),
+  AIC = sapply(models, AIC),
+  BIC = sapply(models, BIC),
+  deltaAIC = AIC - min(AIC),
+  deltaBIC = BIC - min(BIC)
+) %>%
+  arrange(AIC)
+
+print(ic_table)
+
+# Practical guidance
+cat("\n=== Interpretation ===\n")
+cat("Models with ΔAI < 10 from the best have appreciable support.\n")
+cat("Models with ΔAI > 10 have essentially no support.\n\n")
+best_aic <- ic_table %>% filter(AIC == min(AIC)) %>% pull(Model)
+cat("Best model by AIC: ", best_aic, "\n")
+```
+
+**Key insight**: AIC and BIC agree here—M5 (with interaction) is best. This makes sense; we generated the data with a cross-level interaction.
+
+# Building a Model Comparison Table for a Manuscript
+
+Here's how to format model comparisons for publication:
+
+```{r publication-table}
+# Extract fixed effects from all models
+extract_effects <- function(model) {
+  fe <- fixef(model)
+  se_vals <- sqrt(diag(vcov(model)))
+  tibble(
+    Coefficient = names(fe),
+    Estimate = as.numeric(fe),
+    SE = se_vals,
+    t_or_z = Estimate / SE,
+    Sig = case_when(
+      abs(t_or_z) > 2.576 ~ "***",
+      abs(t_or_z) > 1.96 ~ "**",
+      abs(t_or_z) > 1.645 ~ "*",
+      TRUE ~ ""
+    )
+  )
+}
+
+# Because models have different fixed effects, we'll make a wide table manually
+comparison_table <- tibble(
+  Predictor = c(
+    "Autonomy (centered)",
+    "Job Complexity",
+    "Tenure",
+    "Team Climate (centered)",
+    "Autonomy × Team Climate"
+  ),
+  M3 = c(
+    sprintf("%.3f**", fixef(m3_controls)["autonomy_c"]),
+    sprintf("%.3f**", fixef(m3_controls)["job_complexity"]),
+    sprintf("%.3f", fixef(m3_controls)["tenure_years"]),
+    "—",
+    "—"
+  ),
+  M4 = c(
+    sprintf("%.3f**", fixef(m4_l2_pred)["autonomy_c"]),
+    sprintf("%.3f**", fixef(m4_l2_pred)["job_complexity"]),
+    sprintf("%.3f", fixef(m4_l2_pred)["tenure_years"]),
+    sprintf("%.3f**", fixef(m4_l2_pred)["team_climate_c"]),
+    "—"
+  ),
+  M5 = c(
+    sprintf("%.3f**", fixef(m5_interaction)["autonomy_c"]),
+    sprintf("%.3f**", fixef(m5_interaction)["job_complexity"]),
+    sprintf("%.3f", fixef(m5_interaction)["tenure_years"]),
+    sprintf("%.3f**", fixef(m5_interaction)["team_climate_c"]),
+    sprintf("%.3f**", fixef(m5_interaction)["autonomy_c:team_climate_c"])
+  )
+)
+
+print(comparison_table)
+
+# Model fit row
+fit_row <- tibble(
+  Predictor = c("AIC", "BIC", "LogLik", "Comparison to M3"),
+  M3 = c(
+    sprintf("%.1f", AIC(m3_controls)),
+    sprintf("%.1f", BIC(m3_controls)),
+    sprintf("%.1f", logLik(m3_controls)),
+    "—"
+  ),
+  M4 = c(
+    sprintf("%.1f", AIC(m4_l2_pred)),
+    sprintf("%.1f", BIC(m4_l2_pred)),
+    sprintf("%.1f", logLik(m4_l2_pred)),
+    sprintf("Δχ² = %.2f**", -2 * (logLik(m3_controls) - logLik(m4_l2_pred)))
+  ),
+  M5 = c(
+    sprintf("%.1f", AIC(m5_interaction)),
+    sprintf("%.1f", BIC(m5_interaction)),
+    sprintf("%.1f", logLik(m5_interaction)),
+    sprintf("Δχ² = %.2f**", -2 * (logLik(m4_l2_pred) - logLik(m5_interaction)))
+  )
+)
+
+cat("\n=== Model Fit Indices ===\n")
+print(fit_row)
+```
+
+This format clearly shows: (1) how effects change as you add predictors, (2) which effects remain significant, and (3) which model fits best.
+
+# Pseudo-R² Measures
+
+Unlike single-level regression, R² is not automatically output in MLM. The **Nakagawa & Schielzeth** approach decomposes variance explained into marginal (fixed effects only) and conditional (fixed + random effects) components.
+
+```{r r-squared}
+r2_stats <- tibble(
+  Model = c("M3: L1 Controls", "M4: + L2 Pred", "M5: + Interaction"),
+  R2_Marginal = c(
+    r2(m3_controls)$R2_marginal,
+    r2(m4_l2_pred)$R2_marginal,
+    r2(m5_interaction)$R2_marginal
+  ),
+  R2_Conditional = c(
+    r2(m3_controls)$R2_conditional,
+    r2(m4_l2_pred)$R2_conditional,
+    r2(m5_interaction)$R2_conditional
+  ),
+  Variance_Explained_by_REs = c(
+    r2(m3_controls)$R2_conditional - r2(m3_controls)$R2_marginal,
+    r2(m4_l2_pred)$R2_conditional - r2(m4_l2_pred)$R2_marginal,
+    r2(m5_interaction)$R2_conditional - r2(m5_interaction)$R2_marginal
+  )
+)
+
+print(r2_stats)
+
+cat("\n=== Interpretation ===\n")
+cat("Marginal R²: How much variance is explained by fixed effects alone.\n")
+cat("Conditional R²: How much variance is explained by the full model (fixed + random).\n")
+cat("The gap shows how much random effects (group-level variation) contribute.\n")
+```
+
+**Practical insight**: The conditional R² is larger than marginal—group-level factors explain a lot of variance. This justifies using MLM rather than ignoring the clustering.
+
+# Practical Model-Building Workflow
+
+Here's a systematic approach to building your final model:
+
+```{r workflow}
+cat("=== STEP-BY-STEP MLM MODEL BUILDING WORKFLOW ===\n\n")
+
+cat("STEP 1: Start with the null model (unconditional means model)\n")
+m_null <- lmer(job_satisfaction ~ 1 + (1 | team_id), data = employees, REML = FALSE)
+cat("Formula: Y ~ 1 + (1 | team_id)\n")
+cat("Purpose: Establish baseline ICC, variance components\n\n")
+
+# Compute ICC
+vc_null <- VarCorr(m_null)
+tau_sq <- as.numeric(vc_null$team_id[1, 1])
+sigma_sq <- sigma(m_null)^2
+icc <- tau_sq / (tau_sq + sigma_sq)
+cat("ICC = ", round(icc, 3), " (", round(icc * 100, 1), "% of variance is between-team)\n\n")
+
+cat("STEP 2: Add substantive level-1 predictors\n")
+cat("Decide: Should slopes be fixed or random?\n")
+cat("- Fit with fixed slopes first for simplicity\n")
+m_l1_fixed <- lmer(
+  job_satisfaction ~ autonomy_c + job_complexity + tenure_years + (1 | team_id),
+  data = employees,
+  REML = FALSE
+)
+cat("Formula: Y ~ X1 + X2 + X3 + (1 | team_id)\n")
+cat("Comparison to null: χ² = ", round(-2 * (logLik(m_null) - logLik(m_l1_fixed)), 2), "\n\n")
+
+cat("STEP 3: Test if predictor slopes should be random\n")
+m_l1_random <- lmer(
+  job_satisfaction ~ autonomy_c + job_complexity + tenure_years + (1 + autonomy_c | team_id),
+  data = employees,
+  REML = FALSE
+)
+cat("Formula: Y ~ X1 + X2 + X3 + (1 + X1 | team_id)\n")
+cat("Comparison: χ² = ", round(-2 * (logLik(m_l1_fixed) - logLik(m_l1_random)), 2), "\n")
+cat("(If significant, keep random slope; otherwise, keep fixed)\n\n")
+
+cat("STEP 4: Add level-2 predictors\n")
+m_l2 <- lmer(
+  job_satisfaction ~ autonomy_c + job_complexity + tenure_years + team_climate_c +
+    (1 + autonomy_c | team_id),
+  data = employees,
+  REML = FALSE
+)
+cat("Comparison to L1 model: χ² = ", round(-2 * (logLik(m_l1_random) - logLik(m_l2)), 2), "\n\n")
+
+cat("STEP 5: Test cross-level interactions (if theory supports it)\n")
+m_final <- lmer(
+  job_satisfaction ~ autonomy_c * team_climate_c + job_complexity + tenure_years +
+    (1 + autonomy_c | team_id),
+  data = employees,
+  REML = FALSE
+)
+cat("Comparison to L2 model: χ² = ", round(-2 * (logLik(m_l2) - logLik(m_final)), 2), "\n\n")
+
+cat("STEP 6: Final model diagnostics and re-estimate with REML\n")
+cat("(See Week 8 tutorial)\n\n")
+
+cat("STEP 7: Report results\n")
+cat("Use AIC/BIC comparison + LR tests + effect sizes\n")
+cat("Report marginal and conditional R²\n")
+cat("Present simple slopes if interactions present\n")
+```
+
+# Try It Yourself
+
+1. **Alternative specification**: Fit a model where job_complexity also has a random slope. Does this improve fit over the current model?
+
+2. **Model selection criteria**: Using only AIC and BIC (no LR tests), which model would you choose from M1–M5? Do they agree?
+
+3. **Effect stability**: Refit models M3, M4, and M5 using REML. Do the fixed effects change noticeably? (They shouldn't, but this is good practice to check.)
+
+4. **Competing hypotheses**: Suppose a colleague proposes that leader_support (not team_climate) is the true moderator. Build that model and compare it (via AIC/BIC) to your interaction model with team_climate. Which fits better?
+
+5. **Reporting challenge**: Create a manuscript-ready table showing all five models (M1–M5) with fit indices, degrees of freedom, and key coefficients.
+
+---
+
+**References**
+
+Akaike, H. (1974). A new look at the statistical model identification. *IEEE Transactions on Automatic Control*, 19(6), 716-723.
+
+Nakagawa, S., & Schielzeth, H. (2013). A general and simple method for obtaining R² from generalized linear mixed-effects models. *Methods in Ecology and Evolution*, 4(2), 133-142.
+
+Schwarz, G. (1978). Estimating the dimension of a model. *Annals of Statistics*, 6(2), 461-464.

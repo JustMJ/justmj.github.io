@@ -1,0 +1,424 @@
+---
+title: "Partitioning Variance: The Unconditional Model and ICC"
+author: "Justin Jones"
+date: last-modified
+format:
+  html:
+    code-fold: true
+    code-tools: true
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction: The Null Model as a Starting Point
+
+Before we add any predictors, we need to understand the fundamental question: **How much variation in our outcome exists between groups versus within groups?**
+
+This is not a trivial question. Imagine you're studying job satisfaction in an organization. If 80% of the variance is between teams and only 20% is within teams, then the key to understanding satisfaction lies in team-level characteristics: leadership, resources, team climate. Conversely, if 80% is within teams and 20% is between, then individual differences matter far more than team membership.
+
+This proportioning of variance is the job of the **unconditional model** (also called the **null model**). It's the simplest multilevel model: no predictors, just random intercepts. Despite its simplicity, it answers one of the most important questions in multilevel research: **Is there meaningful clustering in the data?**
+
+The unconditional model is your starting point for all multilevel analyses. It provides:
+
+1. A baseline understanding of variance structure
+2. The **Intraclass Correlation Coefficient (ICC)**, which quantifies how much clustering exists
+3. A reference point for calculating **pseudo-R²** values when you add predictors later
+4. Evidence for whether MLM is even necessary (if ICC is near zero, ordinary regression may suffice)
+
+Let's build this model step by step, using the same organizational dataset we created last week.
+
+# The Unconditional Model in Words and Symbols
+
+The unconditional model is written as:
+
+$$Y_{ij} = \gamma_{00} + u_{0j} + r_{ij}$$
+
+Let's unpack this notation carefully, because multilevel models can look intimidating at first:
+
+- **$Y_{ij}$**: The outcome for individual $i$ nested within group $j$. In our case, job satisfaction for employee $i$ in team $j$.
+
+- **$\gamma_{00}$** (pronounced "gamma double-zero"): The grand mean, the overall intercept averaged across all groups. This is the predicted satisfaction for the "average" employee in the "average" team. It's analogous to the intercept in OLS, but with a special notation to indicate it's a fixed effect estimated at the group level.
+
+- **$u_{0j}$** (pronounced "u naught j"): The random intercept deviation for group $j$. This captures how much team $j$ deviates from the grand mean. If team 5 has $u_{05} = 0.8$, then employees in team 5 are, on average, 0.8 units higher in satisfaction than the grand mean. These random intercepts are assumed to be normally distributed with mean 0 and variance $\tau_{00}^2$ (tau). The subscript "0" reminds us this is a random variation in the intercept.
+
+- **$r_{ij}$** (pronounced "r i j"): The individual-level residual, the deviation of person $i$ from their team's intercept. This is the variation among individuals *within* the same team. These residuals are assumed to be normally distributed with mean 0 and variance $\sigma^2$ (sigma-squared). This variance is also called the "level-1 residual variance."
+
+In words: **The outcome for each person equals the overall average, plus their team's deviation from that average, plus their individual deviation from their team's average.**
+
+The two variance components are:
+
+- **$\tau_{00}^2$**: Between-group variance (Level 2). How much teams differ from each other.
+- **$\sigma^2$**: Within-group variance (Level 1). How much individuals within the same team differ from each other.
+
+# Fitting the Unconditional Model in R
+
+Let's fit this model using the `lmer()` function from the `lme4` package, using the same employee dataset we created in Week 1.
+
+```{r setup}
+set.seed(1234)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(performance)
+library(magrittr)
+
+# Recreate the employee dataset from Week 1
+n_teams <- 50
+teams <- tibble(
+  team_id = 1:n_teams,
+  team_size = sample(8:15, n_teams, replace = TRUE),
+  team_climate = rnorm(n_teams, mean = 5, sd = 0.8))
+
+teams %<>% 
+  mutate(team_climate = pmin(pmax(team_climate, 1), 7))
+
+employees <- teams %>%
+  slice(rep(1:n_teams, teams$team_size)) %>%
+  arrange(team_id) %>%
+  group_by(team_id) %>%
+  mutate(
+    emp_id = row_number(),
+    employee_id = paste0("T", team_id, "E", emp_id),
+    autonomy = rnorm(n(), mean = 4.5, sd = 1.2),
+    autonomy = pmin(pmax(autonomy, 1), 7),
+    performance = rnorm(n(), mean = 6, sd = 1.5),
+    performance = pmin(pmax(performance, 1), 10),
+    tenure = rgamma(n(), shape = 3, rate = 0.8)
+  ) %>%
+  ungroup()
+
+employees <- employees %>%
+  group_by(team_id) %>%
+  mutate(
+    u0j = rnorm(1, mean = 0, sd = sqrt(0.6)),
+    job_satisfaction = 3.0 +
+                       0.5 * scale(autonomy)[,1] +
+                       0.4 * team_climate +
+                       u0j +
+                       rnorm(n(), mean = 0, sd = sqrt(0.8)),
+    job_satisfaction = pmin(pmax(job_satisfaction, 1), 7)
+  ) %>%
+  ungroup() %>%
+  select(-u0j, -emp_id)
+
+cat("Dataset ready: ", nrow(employees), "employees in", n_distinct(employees$team_id), "teams\n")
+```
+
+Now, fit the unconditional model:
+
+```{r unconditional-model}
+# Fit the unconditional model (null model)
+model_unconditional <- lmer(job_satisfaction ~ 1 + (1 | team_id), data = employees)
+
+# Display the summary
+summary(model_unconditional)
+```
+
+Let's dissect this output:
+
+**Fixed effects:**
+- **(Intercept) = 4.089**: This is $\gamma_{00}$, the grand mean. The average job satisfaction across all employees is 4.09 on the 1-7 scale. The standard error is 0.11, reflecting the uncertainty in estimating the team-level mean.
+
+**Random effects:**
+- **Intercept (team_id)**: This shows the variance of the random intercepts, $\tau_{00}^2$. The output says "Variance: 0.580," so $\tau_{00} = \sqrt{0.580} = 0.762$. This tells us that the standard deviation of team intercepts is 0.76 units on the satisfaction scale.
+
+- **Residual**: This is the within-team variance, $\sigma^2 = 0.794$. The standard deviation of individual residuals is $\sigma = \sqrt{0.794} = 0.891$. This captures how much individual employees within the same team differ from their team's average.
+
+## Interpreting the Variance Components
+
+The total variance in job satisfaction is:
+
+$$\text{Total Variance} = \tau_{00}^2 + \sigma^2 = 0.580 + 0.794 = 1.374$$
+
+- **Between-team variance** ($\tau_{00}^2$): 0.580 (accounts for differences between teams)
+- **Within-team variance** ($\sigma^2$): 0.794 (accounts for differences among individuals in the same team)
+
+This tells us that about 42% of satisfaction variation is between teams (0.580 / 1.374), and about 58% is within teams. This means individual differences matter somewhat more than team membership—but team membership still accounts for a substantial portion of the variance, certainly enough to justify multilevel modeling.
+
+# Extracting Variance Components and Computing the ICC
+
+The **Intraclass Correlation Coefficient (ICC)** quantifies the degree of clustering. It answers: "How much do observations within the same group correlate with each other?"
+
+The ICC is calculated as:
+
+$$ICC = \frac{\tau_{00}^2}{\tau_{00}^2 + \sigma^2}$$
+
+This is simply the proportion of total variance that is at the group level. Let's compute it several ways:
+
+```{r icc-computation}
+# Method 1: Manual calculation from variance components
+tau_sq <- 0.580
+sigma_sq <- 0.794
+icc_manual <- tau_sq / (tau_sq + sigma_sq)
+
+cat("ICC (manual calculation):", round(icc_manual, 3), "\n")
+
+# Method 2: Extract variance components using VarCorr()
+var_components <- VarCorr(model_unconditional)
+print(var_components)
+
+# Method 3: Using performance::icc() function
+icc_performance <- icc(model_unconditional)
+print(icc_performance)
+```
+
+**Interpretation**: The ICC of approximately 0.42 tells us that any two employees randomly selected from the same team will, on average, have job satisfaction scores that correlate 0.42 with each other, *over and above what would be expected by chance*. This is substantial. 
+
+Compare this to two employees randomly selected from different teams: their satisfaction scores would correlate much less (near zero, since they don't share any team context). The fact that ICC is 0.42 tells us that **team membership matters**—it's a major predictor of individual satisfaction.
+
+In general, ICC values of:
+- **< 0.05**: Negligible clustering; OLS may be sufficient
+- **0.05–0.10**: Small clustering; MLM is recommended but effect is modest
+- **0.10–0.20**: Moderate clustering; MLM is clearly warranted
+- **> 0.20**: Substantial clustering; MLM is essential
+
+Our ICC of 0.42 is very substantial, indicating strong clustering and high value from multilevel modeling.
+
+# Design Effects: When Is MLM Worth the Complexity?
+
+The **Design Effect (DEFF)** tells us how much the effective sample size is reduced due to clustering. It's calculated as:
+
+$$DEFF = 1 + (n_{0} - 1) \times ICC$$
+
+where $n_0$ is the average group size.
+
+```{r design-effect}
+# Calculate DEFF
+n_per_group <- nrow(employees) / n_distinct(employees$team_id)
+icc_value <- icc_manual
+deff <- 1 + (n_per_group - 1) * icc_value
+
+cat("Average group size:", round(n_per_group, 1), "\n")
+cat("ICC:", round(icc_value, 3), "\n")
+cat("Design Effect:", round(deff, 2), "\n")
+cat("\nInterpretation: With DEFF =", round(deff, 2), 
+    ", the effective sample size for testing\n")
+cat("a fixed effect is", round(500 / deff, 0), 
+    "instead of 500.\n")
+cat("That's a loss of", round(100 * (1 - 1/deff), 1), 
+    "% of the sample.\n")
+```
+
+This design effect tells us that due to clustering, our effective sample size for detecting fixed effects (like the effect of autonomy) is substantially smaller than 500. We've lost statistical power because of the non-independence of observations.
+
+This is precisely why ignoring MLM structure is so costly: you conduct a study thinking you have 500 observations, but the clustering means you effectively have only about 350–400 independent pieces of information for hypothesis testing. Your standard errors are biased, and you can't trust your p-values.
+
+# Caterpillar Plots: Visualizing Random Intercepts
+
+The random intercepts ($u_{0j}$ values) tell us the deviation of each team from the grand mean. We can extract these and visualize them with a "caterpillar plot":
+
+```{r caterpillar-plot}
+# Extract random intercepts
+random_ints <- ranef(model_unconditional)$team_id %>%
+  rownames_to_column(var = "team_id") %>%
+  rename(intercept = `(Intercept)`)
+
+# Calculate confidence intervals for intercepts
+# The SE of a random intercept is approximately sqrt(tau_sq)
+se_intercept <- sqrt(0.580)
+
+random_ints <- random_ints %>%
+  mutate(
+    team_id = as.numeric(team_id),
+    ci_lower = intercept - 1.96 * se_intercept,
+    ci_upper = intercept + 1.96 * se_intercept
+  ) %>%
+  arrange(intercept)
+
+# Caterpillar plot
+ggplot(random_ints, aes(x = reorder(team_id, intercept), y = intercept)) +
+  geom_point(size = 2, color = "steelblue") +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), 
+                width = 0.3, color = "steelblue", alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red", size = 1) +
+  coord_flip() +
+  labs(
+    title = "Caterpillar Plot of Team Random Intercepts",
+    subtitle = "Each point is a team's deviation from the grand mean",
+    x = "Team ID (sorted)",
+    y = "Random Intercept (deviation from grand mean)"
+  ) +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 7))
+```
+
+This caterpillar plot shows each team's estimated intercept (deviation from the grand mean) along with its confidence interval. Teams with points above the dashed red line (at zero) have above-average job satisfaction; those below have below-average satisfaction.
+
+The fact that many confidence intervals don't overlap with zero tells us that substantial team differences exist. Some teams are genuinely more satisfied than others—these differences are not just random noise.
+
+# Comparing ICC Across Multiple Outcomes
+
+In real research, you often have multiple potential outcomes. Computing ICC for each tells you which outcomes show stronger clustering and therefore might benefit more from multilevel modeling:
+
+```{r multiple-outcomes}
+# Fit unconditional models for different outcomes
+model_performance <- lmer(performance ~ 1 + (1 | team_id), data = employees)
+model_autonomy <- lmer(autonomy ~ 1 + (1 | team_id), data = employees)
+
+# Extract ICCs using variance components directly (more robust than performance::icc)
+extract_icc_vc <- function(model) {
+  vc <- as.data.frame(VarCorr(model))
+  tau2 <- vc$vcov[1]
+  sigma2 <- vc$vcov[nrow(vc)]
+  tau2 / (tau2 + sigma2)
+}
+icc_satisfaction <- extract_icc_vc(model_unconditional)
+icc_performance <- extract_icc_vc(model_performance)
+icc_autonomy <- extract_icc_vc(model_autonomy)
+
+# Create comparison table
+icc_comparison <- tibble(
+  Outcome = c("Job Satisfaction", "Performance Rating", "Autonomy Perception"),
+  ICC = c(icc_satisfaction, icc_performance, icc_autonomy)
+) %>%
+  mutate(
+    ICC = round(ICC, 3),
+    Clustering = case_when(
+      ICC < 0.05 ~ "Negligible",
+      ICC < 0.10 ~ "Small",
+      ICC < 0.20 ~ "Moderate",
+      TRUE ~ "Substantial"
+    )
+  )
+
+print(icc_comparison)
+
+cat("\n\nInterpretation:\n")
+cat("- Job satisfaction has substantial clustering (ICC =", 
+    round(icc_satisfaction, 3), 
+    "), meaning team membership strongly predicts individual satisfaction.\n")
+cat("- Performance shows moderate clustering, suggesting both team and individual factors matter.\n")
+cat("- Autonomy shows minimal clustering, indicating people's autonomy perceptions vary little by team.\n")
+```
+
+This comparison reveals that different outcomes show different degrees of clustering. Job satisfaction is strongly determined by team membership, while autonomy perception is more individual-specific. This should inform your research focus and model selection.
+
+# A Step-by-Step Interpretation Example
+
+Let's walk through a complete interpretation of the unconditional model output for job satisfaction:
+
+```{r interpretation-example}
+cat("=== UNCONDITIONAL MODEL SUMMARY ===\n\n")
+
+cat("1. GRAND MEAN (Fixed Effect):\n")
+cat("   Estimate: 4.089\n")
+cat("   Interpretation: The overall average job satisfaction across all\n")
+cat("   employees and teams is 4.09 on the 1-7 scale.\n\n")
+
+cat("2. BETWEEN-TEAM VARIANCE (tau_sq):\n")
+cat("   Variance: 0.580\n")
+cat("   SD: 0.762\n")
+cat("   Interpretation: Teams vary in average satisfaction. The standard\n")
+cat("   deviation of team means is 0.76 units. Approximately 95% of teams\n")
+cat("   fall between 4.09 - 1.96(0.76) = 2.62 and 4.09 + 1.96(0.76) = 5.57.\n\n")
+
+cat("3. WITHIN-TEAM VARIANCE (sigma_sq):\n")
+cat("   Variance: 0.794\n")
+cat("   SD: 0.891\n")
+cat("   Interpretation: Individuals within the same team differ in\n")
+cat("   satisfaction. The standard deviation of individual residuals is 0.89 units.\n\n")
+
+cat("4. INTRACLASS CORRELATION (ICC):\n")
+icc_val <- 0.580 / (0.580 + 0.794)
+cat("   ICC = 0.580 / 1.374 =", round(icc_val, 3), "\n")
+cat("   Interpretation: Approximately 42% of variance in job satisfaction\n")
+cat("   is due to team-level differences. Any two employees from the same\n")
+cat("   team correlate 0.42 on satisfaction, reflecting their shared team context.\n\n")
+
+cat("5. DESIGN EFFECT (DEFF):\n")
+n0 <- nrow(employees) / n_distinct(employees$team_id)
+deff_val <- 1 + (n0 - 1) * icc_val
+cat("   DEFF =", round(deff_val, 2), "\n")
+cat("   Effective sample size for fixed effects:", round(500 / deff_val, 0), "\n")
+cat("   Interpretation: While we surveyed 500 employees, clustering reduces\n")
+cat("   the effective sample size. We have ~", round(500 / deff_val, 0), 
+    " independent pieces of information.\n")
+```
+
+# Visualizing the Model: The Shrinkage of Random Intercepts
+
+One beautiful property of mixed models is that the estimated random intercepts are *shrunk* toward zero. Teams with small sample sizes or more variability have their estimates pulled more toward the grand mean. This is called *partial pooling* and is a strength of Bayesian and mixed model estimation.
+
+```{r shrinkage-demonstration}
+# Calculate the group-level means (naive estimates, no shrinkage)
+group_means <- employees %>%
+  group_by(team_id) %>%
+  summarize(
+    obs_mean = mean(job_satisfaction),
+    n_obs = n(),
+    .groups = 'drop'
+  )
+
+# Merge with random intercepts (shrunk estimates)
+random_ints_full <- ranef(model_unconditional)$team_id %>%
+  rownames_to_column(var = "team_id") %>%
+  mutate(
+    team_id = as.numeric(team_id),
+    shrunk_mean = 4.089 + `(Intercept)`
+  ) %>%
+  select(team_id, shrunk_mean)
+
+comparison <- group_means %>%
+  left_join(random_ints_full, by = "team_id")
+
+# Plot: observed vs. shrunk estimates
+ggplot(comparison, aes(x = obs_mean, y = shrunk_mean)) +
+  geom_point(aes(size = n_obs), alpha = 0.6, color = "darkblue") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(
+    title = "Partial Pooling: Observed vs. Shrunk Intercepts",
+    subtitle = "Bubble size = team sample size. Points below the line show shrinkage.",
+    x = "Observed Team Mean (no shrinkage)",
+    y = "Shrunk Estimate from Mixed Model"
+  ) +
+  theme_minimal()
+```
+
+Notice that teams with fewer observations (smaller bubbles) are pulled more toward the grand mean of 4.09. This is *shrinkage* and it's a feature, not a bug: it prevents you from over-interpreting random variation in small teams.
+
+# Try It Yourself Exercises
+
+## Exercise 1: Build an Unconditional Model for a New Outcome
+Fit an unconditional model using **performance** as the outcome instead of job_satisfaction. Extract the variance components and compute the ICC. How does it compare to the ICC for job_satisfaction? What does this tell you about clustering in performance ratings?
+
+## Exercise 2: Design Effect Across Different Group Sizes
+Simulate what the design effect would be for datasets with:
+- 500 employees in 10 large teams (50 per team)
+- 500 employees in 50 medium teams (10 per team)
+- 500 employees in 100 small teams (5 per team)
+
+Calculate DEFF for each, assuming the ICC stays constant at 0.30. How does group size affect the loss of statistical power due to clustering?
+
+## Exercise 3: Caterpillar Plot with Sorting
+Recreate the caterpillar plot but sorted by team_size. Do larger teams tend to have different intercepts than smaller teams? Create a scatter plot of team_size vs. random intercepts to explore this relationship.
+
+## Exercise 4: Multi-Level Variance Decomposition
+For job_satisfaction, compute:
+1. The between-team SD: How much do team means vary?
+2. The within-team SD: How much do individuals within a team vary?
+3. Create a visualization showing these two sources of variation side by side.
+
+## Exercise 5: Null Hypothesis Test for Team Variation
+Consider the likelihood ratio test comparing the unconditional model to a standard OLS model (no random intercepts). Fit both models using lmer() and lm() and compare them with anova(). What does this test tell you about whether teams genuinely differ?
+
+---
+
+**Key Takeaways:**
+
+- The unconditional model is the foundation of multilevel analysis. It partitions variance into between-group and within-group components.
+
+- The Intraclass Correlation Coefficient (ICC) quantifies clustering: the proportion of variance that is between groups.
+
+- An ICC of 0.42 indicates very substantial clustering, meaning that team membership explains a large portion of individual satisfaction differences.
+
+- The design effect shows us that clustering reduces the effective sample size for hypothesis testing. With DEFF ≈ 1.35, our effective N is only about 370 instead of 500.
+
+- Random intercepts are shrunk toward the grand mean, especially for teams with small sample sizes. This partial pooling prevents overfitting and improves estimation of team effects.
+
+- The unconditional model provides a reference point: when you add predictors, you can compare the new model's variance components to these baseline values to understand how much your predictors explain.

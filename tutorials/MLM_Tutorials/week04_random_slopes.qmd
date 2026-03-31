@@ -1,0 +1,481 @@
+---
+title: "Random Slopes and Model Building Strategy"
+subtitle: "PSY 8XXX: Multilevel Modeling for Organizational Research — Week 4"
+author: "Instructor Name"
+date: last-modified
+format:
+  html:
+    code-fold: true
+    code-tools: true
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction: When Relationships Differ Across Groups
+
+So far, we've assumed that the relationship between a predictor and an outcome is identical across all groups. For example, we assumed that autonomy has the same effect on job satisfaction in every team. But organizational reality is messier: in some teams, autonomy might strongly drive satisfaction; in others, it might matter little.
+
+This variation in slopes across groups is the domain of **random slopes** modeling. A random slopes model allows both the intercept *and* the slope to vary across groups. It's more flexible and realistic than the random intercept model, but it comes with costs: additional parameters to estimate, more potential for convergence issues, and lower power when sample sizes are small.
+
+This week, we'll develop intuition for random slopes, learn when to use them, grapple with model-building strategy, and navigate the thorny practical issues that arise in real data analysis.
+
+# The Random Slope Model: Equations
+
+Recall the random intercept model allowed $\beta_{0j}$ to vary across groups but assumed $\beta_{1j}$ was constant:
+
+$$Y_{ij} = \beta_{0j} + \beta_{1} X_{ij} + r_{ij}$$
+
+The random slope model relaxes this assumption:
+
+$$Y_{ij} = \beta_{0j} + \beta_{1j} X_{ij} + r_{ij}$$
+
+Now both $\beta_{0j}$ and $\beta_{1j}$ vary across groups. At Level 2, we model these:
+
+$$\beta_{0j} = \gamma_{00} + \gamma_{01} W_j + u_{0j}$$
+$$\beta_{1j} = \gamma_{10} + \gamma_{11} W_j + u_{1j}$$
+
+The random deviations $u_{0j}$ and $u_{1j}$ are allowed to correlate. This correlation can be substantively interesting: do teams with higher baseline satisfaction also show stronger autonomy-satisfaction relationships?
+
+Substituting into the Level-1 model:
+
+$$Y_{ij} = \gamma_{00} + \gamma_{10} X_{ij} + \gamma_{01} W_j + \gamma_{11} W_j X_{ij} + u_{0j} + u_{1j} X_{ij} + r_{ij}$$
+
+This combined model includes:
+
+- **$\gamma_{00}$**: Grand mean intercept
+- **$\gamma_{10}$**: Average effect of $X$ across groups
+- **$\gamma_{01}$**: Effect of group-level predictor on intercepts (between-group effect)
+- **$\gamma_{11}$**: Cross-level interaction (does the effect of $X$ depend on $W$?)
+- **$u_{0j}$, $u_{1j}$**: Random deviations of intercept and slope in group $j$
+
+# Setup
+
+```{r setup}
+set.seed(1234)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(performance)
+library(broom.mixed)
+library(magrittr)
+
+# Recreate the employee dataset
+n_teams <- 50
+teams <- tibble(
+  team_id = 1:n_teams,
+  team_size = sample(8:15, n_teams, replace = TRUE),
+  team_climate = rnorm(n_teams, mean = 5, sd = 0.8))
+
+ teams %<>% mutate(
+  team_climate = pmin(pmax(team_climate, 1), 7)
+)
+
+employees <- teams %>%
+  slice(rep(1:n_teams, teams$team_size)) %>%
+  arrange(team_id) %>%
+  group_by(team_id) %>%
+  mutate(
+    emp_id = row_number(),
+    employee_id = paste0("T", team_id, "E", emp_id),
+    autonomy = rnorm(n(), mean = 4.5, sd = 1.2),
+    autonomy = pmin(pmax(autonomy, 1), 7),
+    performance = rnorm(n(), mean = 6, sd = 1.5),
+    performance = pmin(pmax(performance, 1), 10),
+    tenure = rgamma(n(), shape = 3, rate = 0.8)
+  ) %>%
+  ungroup()
+
+employees <- employees %>%
+  group_by(team_id) %>%
+  mutate(
+    u0j = rnorm(1, mean = 0, sd = sqrt(0.6)),
+    job_satisfaction = 3.0 +
+                       0.5 * scale(autonomy)[,1] +
+                       0.4 * team_climate +
+                       u0j +
+                       rnorm(n(), mean = 0, sd = sqrt(0.8)),
+    job_satisfaction = pmin(pmax(job_satisfaction, 1), 7)
+  ) %>%
+  ungroup() %>%
+  select(-u0j, -emp_id)
+
+cat("Dataset ready:", nrow(employees), "employees in", n_distinct(employees$team_id), "teams\n")
+```
+
+# Fitting Random Slopes in lme4
+
+The syntax for a random slopes model in `lmer()` is straightforward. The formula `(predictor | group)` means: allow the slope of predictor to vary randomly across groups.
+
+```{r random-slope-model}
+# Model 1: Random intercept only (baseline)
+model_ri <- lmer(job_satisfaction ~ autonomy + (1 | team_id), data = employees)
+
+# Model 2: Random slope for autonomy
+model_rs <- lmer(job_satisfaction ~ autonomy + (1 + autonomy | team_id), 
+                 data = employees)
+
+# Display summaries
+cat("=== RANDOM INTERCEPT MODEL ===\n")
+print(summary(model_ri))
+
+cat("\n\n=== RANDOM SLOPE MODEL ===\n")
+print(summary(model_rs))
+```
+
+**Key differences in the output:**
+
+In the random intercept model, we see:
+- `Intercept | team_id`: Variance 0.469
+- `Residual`: 0.768
+
+In the random slope model, we see:
+- `Intercept | team_id`: Variance 0.491
+- `autonomy | team_id`: Variance (this is $\tau_{11}^2$, the variance of slopes)
+- `Residual`: 0.755
+
+The variance components look similar, but the slope variance is crucial to interpret.
+
+# Interpreting Random Slope Output
+
+Let's extract and examine the random effects more carefully:
+
+```{r interpret-slopes}
+# Extract random intercepts and slopes
+ranef_rs <- ranef(model_rs)$team_id
+head(ranef_rs, 10)
+
+# Calculate team-specific intercepts and slopes
+team_effects <- ranef_rs %>%
+  rownames_to_column(var = "team_id") %>%
+  mutate(
+    team_id = as.numeric(team_id),
+    intercept = `(Intercept)` + fixef(model_rs)[1],  # Add fixed intercept
+    slope = autonomy + fixef(model_rs)[2]            # Add fixed slope
+  ) %>%
+  arrange(slope)
+
+# Show teams with strongest and weakest autonomy effects
+cat("Teams with STRONGEST autonomy effects:\n")
+print(head(team_effects[, c("team_id", "intercept", "slope")], 5))
+
+cat("\n\nTeams with WEAKEST autonomy effects:\n")
+print(tail(team_effects[, c("team_id", "intercept", "slope")], 5))
+```
+
+Notice that the slope of autonomy varies substantially across teams. Some teams show strong autonomy effects (e.g., slope near 0.6), others weak effects (e.g., slope near 0.2). This heterogeneity was hidden in the random intercept model, which forced all teams to have the same slope.
+
+# Visualizing Random Slopes
+
+The best way to understand random slopes is through visualization:
+
+```{r visualize-slopes}
+# Create predicted values for each team
+pred_data <- expand.grid(
+  autonomy = seq(1, 7, by = 0.3),
+  team_id = unique(employees$team_id)
+) %>%
+  left_join(
+    employees %>% 
+      group_by(team_id) %>% 
+      summarize(team_climate = first(team_climate), .groups = 'drop'),
+    by = "team_id"
+  )
+
+# Predictions with random slopes model
+pred_data$pred_rs <- predict(model_rs, newdata = pred_data)
+# Fixed effects only (overall trend)
+pred_data$pred_fixed <- predict(model_rs, newdata = pred_data, re.form = NA)
+
+# Plot
+ggplot(employees, aes(x = autonomy, y = job_satisfaction)) +
+  geom_point(alpha = 0.15, size = 0.8) +
+  geom_line(data = pred_data, aes(y = pred_rs, group = team_id, color = team_climate),
+            alpha = 0.5, size = 0.7) +
+  geom_line(data = pred_data %>% distinct(autonomy, pred_fixed), 
+            aes(y = pred_fixed, group = NA), color = "black", size = 1.3) +
+  scale_color_gradient(low = "blue", high = "red", name = "Team Climate") +
+  labs(
+    title = "Random Slopes Model: Autonomy-Satisfaction Relationship Varies by Team",
+    subtitle = "Black line = fixed effect (average slope); colored lines = team-specific slopes",
+    x = "Autonomy (1-7 scale)",
+    y = "Job Satisfaction (1-7 scale)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+Now the colored lines *converge and diverge*—they're not parallel! Some teams show steep relationships (autonomy matters a lot), others show shallow relationships (autonomy matters less). This is the payoff of random slopes: a more realistic depiction of organizational heterogeneity.
+
+# Likelihood Ratio Tests: Does the Model Improve?
+
+Are random slopes necessary? We can test this formally by comparing the random intercept model to the random slope model using a likelihood ratio test:
+
+```{r likelihood-test}
+# Compare models
+cat("=== LIKELIHOOD RATIO TEST ===\n")
+cat("Null: Random intercept model\n")
+cat("Alternative: Random slope model\n\n")
+
+anova(model_ri, model_rs)
+```
+
+The p-value tests whether allowing the slope to vary improves model fit. If p < 0.05, we have evidence that slopes genuinely vary across teams. If p > 0.05, the random intercept model is simpler and sufficient (principle of parsimony).
+
+In real applications, this test is often non-significant because:
+1. We have modest team sample sizes (10 employees per team on average), limiting power
+2. True slope heterogeneity may be small in many real datasets
+3. The computational cost of estimating slope variance is high relative to the information gain
+
+This is why many researchers use random slopes conservatively and examine whether results differ meaningfully between RI and RS models.
+
+# Correlation of Random Effects
+
+An important output from the random slope model is the **correlation between random intercepts and slopes**. Extract this:
+
+```{r random-corr}
+# Extract variance-covariance matrix of random effects
+vcov_re <- VarCorr(model_rs)
+print(vcov_re)
+
+# The correlation appears in the output (if it's printed)
+# You can also extract it programmatically
+sd_intercept <- sqrt(as.numeric(vcov_re$team_id[1, 1]))
+sd_slope <- sqrt(as.numeric(vcov_re$team_id[2, 2]))
+cov_is <- as.numeric(vcov_re$team_id[1, 2])
+corr_is <- cov_is / (sd_intercept * sd_slope)
+
+cat("\n\nCorrelation between random intercept and slope:", round(corr_is, 3), "\n")
+cat("Interpretation: If two teams have different baseline satisfaction,\n")
+cat("do they also differ in how much autonomy matters?\n")
+```
+
+A positive correlation means teams with higher intercepts (more satisfied) also show steeper slopes (autonomy matters more). A negative correlation means the opposite. This correlation often has substantive meaning—it can reveal whether high-satisfaction teams are "stronger" (more sensitive to predictors) or whether there's a compensatory relationship.
+
+# Model Building Strategies
+
+When should you use random slopes? The field has evolved through several perspectives:
+
+## Strategy 1: "Keep It Maximal" (Barr et al., 2013)
+
+Barr, Levy, Scheepers, and Tily (2013) argued that you should include random slopes for every Level-1 predictor (keeping the model "maximal") to avoid anti-conservative bias. However, this strategy:
+
+**Pros:**
+- Reduces Type I error inflation in some scenarios
+- More accurately reflects true sampling variability
+
+**Cons:**
+- Models often fail to converge with realistic sample sizes
+- Leads to overparameterization and poor estimation of random effects
+- Computationally expensive
+
+## Strategy 2: Bottom-Up Model Building
+
+Start with a random intercept model, then test whether adding random slopes improves fit:
+
+1. Fit unconditional model (baseline)
+2. Add fixed effects of main interest
+3. Test random slopes with LRT
+4. Retain slopes only if they improve fit significantly and estimation is stable
+
+**Pros:**
+- Parsimonious; avoids overparameterization
+- Guided by data and fit statistics
+- Easier interpretation
+
+**Cons:**
+- Sequential testing inflates Type I error slightly
+- Misses effects that are real but weak
+
+## Strategy 3: Theory-Driven Selection
+
+Select random slopes based on theoretical rationale: "Does this variable's effect likely vary across groups?" If yes theoretically, include it; if no, leave it out.
+
+**Pros:**
+- Aligned with your research questions
+- Computationally stable
+- Interpretable
+
+**Cons:**
+- Requires strong theory upfront
+- May miss surprising heterogeneity
+
+## Practical Recommendation
+
+For a doctoral-level analysis with ~50 groups and ~10 observations per group:
+
+1. Fit random intercept model first
+2. Test a *small* number of theoretically motivated random slopes (e.g., your main predictor of interest)
+3. Use model comparison and convergence as guides
+4. If the model fails to converge, simplify: remove correlation between intercept and slope with `||` syntax
+
+# Dealing with Convergence Issues
+
+Random slope models sometimes fail to converge or show warnings like "singular fit" or "failed to converge." These warnings signal estimation trouble. Here are practical solutions:
+
+```{r convergence-solutions}
+# Solution 1: Simplify random effects structure
+# Remove correlation between intercept and slope
+model_rs_uncorr <- lmer(job_satisfaction ~ autonomy + (1 + autonomy || team_id), 
+                        data = employees)
+cat("Model with uncorrelated random effects:\n")
+print(summary(model_rs_uncorr))
+
+# Solution 2: Change optimizer
+model_rs_opt <- lmer(job_satisfaction ~ autonomy + (1 + autonomy | team_id),
+                     data = employees,
+                     control = lmerControl(optimizer = "bobyqa"))
+cat("\n\nModel with alternative optimizer:\n")
+print(summary(model_rs_opt))
+
+# Solution 3: Scale predictors
+employees_scaled <- employees %>%
+  mutate(autonomy_scaled = scale(autonomy)[,1])
+
+model_rs_scaled <- lmer(job_satisfaction ~ autonomy_scaled + (1 + autonomy_scaled | team_id),
+                        data = employees_scaled)
+cat("\n\nModel with scaled predictor:\n")
+print(summary(model_rs_scaled))
+```
+
+The `||` syntax (double pipe) means: allow random slopes but assume they're uncorrelated with random intercepts. This reduces parameters and often resolves convergence issues.
+
+# Comparing Multiple Random Slopes Specifications
+
+Let's compare several models systematically:
+
+```{r model-comparison}
+# Fit models with different random structures
+models <- list(
+  "RI only" = lmer(job_satisfaction ~ autonomy + (1 | team_id), data = employees),
+  "RS autonomy" = lmer(job_satisfaction ~ autonomy + (1 + autonomy | team_id), 
+                       data = employees),
+  "Uncorr slopes" = lmer(job_satisfaction ~ autonomy + (1 + autonomy || team_id), 
+                         data = employees),
+  "With team_climate" = lmer(job_satisfaction ~ autonomy + team_climate + 
+                             (1 + autonomy | team_id), data = employees)
+)
+
+# Compare via AIC and BIC
+comparison <- tibble(
+  Model = names(models),
+  AIC = sapply(models, AIC),
+  BIC = sapply(models, BIC),
+  LogLik = sapply(models, logLik)
+) %>%
+  mutate(
+    dAIC = AIC - min(AIC),
+    dBIC = BIC - min(BIC)
+  )
+
+print(comparison)
+cat("\n\nLower AIC/BIC is better. dAIC/dBIC shows difference from best model.\n")
+```
+
+Use this table to guide model selection. Models within 2-4 AIC points are roughly equivalent; choose the simpler one (fewer parameters).
+
+# A Comprehensive Example: Building a Realistic Analysis
+
+Let's work through a complete random slopes analysis from start to finish:
+
+```{r comprehensive-example}
+cat("=== COMPREHENSIVE RANDOM SLOPES EXAMPLE ===\n\n")
+
+# Start: Unconditional model
+cat("STEP 1: Unconditional Model\n")
+m0 <- lmer(job_satisfaction ~ 1 + (1 | team_id), data = employees)
+cat("  ICC:", round({ vc <- as.data.frame(VarCorr(m0)); vc$vcov[1]/(vc$vcov[1]+vc$vcov[nrow(vc)]) }, 3), "\n")
+
+# Step 2: Add main predictor with random intercept
+cat("\nSTEP 2: Add Autonomy (Random Intercept)\n")
+m1 <- lmer(job_satisfaction ~ autonomy + (1 | team_id), data = employees)
+cat("  Autonomy coef:", round(fixef(m1)[2], 3), "\n")
+cat("  Variance reduction (within):", 
+    round((1 - as.numeric(VarCorr(m1))[2] / as.numeric(VarCorr(m0))[2]) * 100, 1), "%\n")
+
+# Step 3: Add random slope
+cat("\nSTEP 3: Add Random Slope\n")
+m2 <- lmer(job_satisfaction ~ autonomy + (1 + autonomy | team_id), 
+           data = employees)
+cat("  Slope variance (tau11):", round(as.numeric(VarCorr(m2)$team_id[2, 2]), 3), "\n")
+
+# Step 4: Test necessity of random slope
+cat("\nSTEP 4: Likelihood Ratio Test\n")
+test_result <- anova(m1, m2)
+cat("  p-value:", round(test_result$`Pr(>Chisq)`[2], 4), "\n")
+if (test_result$`Pr(>Chisq)`[2] < 0.05) {
+  cat("  --> Random slope is justified (p < 0.05)\n")
+} else {
+  cat("  --> Random intercept alone is sufficient (p >= 0.05)\n")
+}
+
+# Step 5: Add team-level predictor
+cat("\nSTEP 5: Add Team Climate (Between-Level Effect)\n")
+m3 <- lmer(job_satisfaction ~ autonomy + team_climate + (1 + autonomy | team_id),
+           data = employees)
+cat("  Team climate coef:", round(fixef(m3)[3], 3), "\n")
+
+# Step 6: Check for interaction
+cat("\nSTEP 6: Cross-Level Interaction (Optional)\n")
+cat("  Does team climate moderate the autonomy effect?\n")
+m4 <- lmer(job_satisfaction ~ autonomy * team_climate + (1 + autonomy | team_id),
+           data = employees)
+test_int <- anova(m3, m4)
+cat("  p-value for interaction:", round(test_int$`Pr(>Chisq)`[2], 4), "\n")
+
+# Final comparison
+cat("\nFINAL MODEL COMPARISON (AIC):\n")
+final_comp <- tibble(
+  Model = c("RI", "RS", "RS + team_climate", "RS + climate + interaction"),
+  AIC = c(AIC(m1), AIC(m2), AIC(m3), AIC(m4))
+) %>%
+  mutate(dAIC = AIC - min(AIC))
+print(final_comp)
+```
+
+This step-by-step approach shows how model building progresses: start simple, test complexity, let the data guide decisions.
+
+# Try It Yourself Exercises
+
+## Exercise 1: Random Slopes for Multiple Predictors
+Fit a random slopes model allowing both autonomy and tenure to have random slopes. Does the correlation between their random slopes make substantive sense? (High-autonomy teams—are they also teams where tenure matters more?)
+
+## Exercise 2: Slope Heterogeneity Quantification
+For the random slopes model, calculate the range of slopes across teams (max - min). How much do autonomy effects truly vary? Calculate the ratio of slope SD to fixed slope to quantify the relative heterogeneity.
+
+## Exercise 3: Convergence Troubleshooting
+Simulate a scenario with fewer teams (25 instead of 50) and refit the random slopes model. Does it converge? If not, try the solutions provided (uncorrelated slopes, alternative optimizer, scaling). Document which approach works and why.
+
+## Exercise 4: Theory-Driven Model Selection
+Hypothesize which Level-1 predictors should have random slopes:
+- Autonomy (should affect everyone, right?)
+- Tenure (effect might differ by team)
+- Performance (maybe doesn't vary by team?)
+
+Fit models with each random slope and compare. Did the data align with your theory?
+
+## Exercise 5: Cross-Level Interactions
+Fit a model where autonomy has both a fixed and random slope, and team_climate moderates this relationship. Interpret the cross-level interaction term and visualize predictions at high and low climate.
+
+---
+
+**Key Takeaways:**
+
+- Random slopes models allow relationships between predictors and outcomes to vary across groups, capturing organizational heterogeneity.
+
+- The `(1 + predictor | group)` syntax in `lmer()` estimates both random intercepts and slopes.
+
+- Likelihood ratio tests compare random intercept versus random slope models; use these to decide whether slope heterogeneity is real.
+
+- The correlation between random intercepts and slopes is often substantively interesting, revealing whether high-intercept groups also have steep slopes.
+
+- Model building strategies vary: "keep it maximal," "test incrementally," or "theory-driven." For typical organizational data with ~50 groups and ~10 per group, cautious incrementalism works best.
+
+- Convergence issues are common with random slopes and small samples. Solutions include uncorrelated slopes, alternative optimizers, and scaling predictors.
+
+- Always visualize random slopes to see heterogeneity; summary tables alone miss the important patterns.

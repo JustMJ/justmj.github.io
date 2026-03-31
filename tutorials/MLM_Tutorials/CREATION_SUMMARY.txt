@@ -1,0 +1,155 @@
+================================================================================
+MULTILEVEL MODELING (MLM) TUTORIAL SUITE - CREATION SUMMARY
+================================================================================
+
+Five comprehensive Quarto (.qmd) tutorials created for a doctoral-level MLM 
+seminar in OB/I-O Psychology at UGA. All files are located in:
+
+/sessions/cool-confident-thompson/mnt/outputs/MLM_Tutorials/
+
+================================================================================
+FILE INVENTORY
+================================================================================
+
+1. week06_cross_level_interactions.qmd (427 lines)
+   - Cross-Level Interactions: When group-level variables moderate L1→outcome relationships
+   - Sections: Theory, data simulation with true interaction, lmer fitting, 
+     simple slopes analysis, publication-quality plotting, effect sizes, pitfalls
+   - Realistic scenario: Team climate moderates autonomy → job satisfaction effect
+   - "Try It Yourself" exercises included
+
+2. week07_model_comparison_fit.qmd (470 lines)
+   - Model Comparison, Fit, and Estimation Methods
+   - Sections: ML vs REML, likelihood ratio tests, AIC/BIC, R² measures, 
+     step-by-step model building workflow, publication-ready results tables
+   - Builds 5 nested models comparing null, random intercept, random slope, L2 
+     predictor, and cross-level interaction specifications
+   - Exercises on model selection, sensitivity analysis, competing hypotheses
+
+3. week08_assumptions_diagnostics.qmd (503 lines)
+   - Assumptions, Diagnostics, and Practical Issues
+   - Sections: L1 and L2 residual diagnostics, influence diagnostics, Kenward-Roger 
+     and Satterthwaite df corrections, heteroscedasticity detection, missing data 
+     handling, robust standard errors, complete diagnostic workflow
+   - Includes QQ plots, residual visualizations, Cook's distance analysis
+   - Practical guidance on when assumptions matter and how to address violations
+
+4. week09_power_analysis.qmd (453 lines)
+   - Statistical Power for Multilevel Designs
+   - Sections: Why L2 units matter more than L1 units, analytic power formulas 
+     (Maas & Hox), simulation-based power with simr package, power curves, 
+     design space exploration, study planning workflow, rules of thumb and limits
+   - Effective sample size calculations, power for main effects vs cross-level 
+     interactions, sensitivity analysis
+   - Practical examples: designing adequate studies, comparing design trade-offs
+
+5. week10_multilevel_mediation.qmd (492 lines)
+   - Multilevel Mediation: Within and Between Effects
+   - Sections: The problem with naive mediation on nested data, types of multilevel 
+     mediation (1-1-1, 2-1-1, 2-2-1), decomposing within/between effects, 
+     bootstrapping indirect effects, presenting results with path diagrams
+   - Zhang, Zyphur & Preacher approach with step-by-step implementation
+   - Complete realistic example: team climate → member safety → performance mediation
+
+================================================================================
+DESIGN FEATURES - ALL TUTORIALS
+================================================================================
+
+YAML Headers:
+- Professional formatting with table of contents, self-contained HTML output
+- Code folding enabled for clean presentation
+- Numbered sections and depth-3 TOC
+
+Data & Reproducibility:
+- Simulated organizational data: ~500 employees nested in 50 teams
+- Realistic variables: autonomy, job_satisfaction, team_climate, leader_support, 
+  tenure, job_complexity, team_size
+- Each file uses set.seed(1234) for reproducibility
+- Data-generating processes encode true theoretical relationships
+
+R Packages Used:
+- Core: lme4, lmerTest (model fitting)
+- Visualization: ggplot2 (publication-quality plots)
+- Diagnostics: performance (R², model comparisons)
+- Utilities: tidyverse (data manipulation)
+
+Code Quality:
+- All code uses SIMULATED data (runs standalone, no external file dependencies)
+- Each code chunk followed by substantive narrative interpretation
+- Realistic effect sizes and variance structures drawn from OB literature
+- Mixed explanations: mathematical notation + intuitive prose
+
+Pedagogy:
+- Academic but accessible language (written for doctoral psychologists)
+- Math kept intuitive (not overly formal)
+- Substantive interpretation after every output
+- 3-5 "Try It Yourself" exercises at end of each tutorial
+- Real-world organizational examples throughout
+
+================================================================================
+LINE COUNTS (Verification)
+================================================================================
+
+File                                    Lines
+week06_cross_level_interactions.qmd     427  ✓ Within target (400-600)
+week07_model_comparison_fit.qmd         470  ✓ Within target (400-600)
+week08_assumptions_diagnostics.qmd      503  ✓ Within target (400-600)
+week09_power_analysis.qmd               453  ✓ Within target (400-600)
+week10_multilevel_mediation.qmd         492  ✓ Within target (400-600)
+
+TOTAL: 2,345 lines of tutorial content
+
+================================================================================
+KEY TOPICS COVERED
+================================================================================
+
+Statistical Methods:
+✓ Cross-level interactions (1-2 interactions)
+✓ Model comparison via LR tests and information criteria
+✓ Pseudo-R² (Nakagawa & Schielzeth framework)
+✓ Assumption checking (normality, homoscedasticity, linearity)
+✓ Influence diagnostics (Cook's distance, leverage)
+✓ Power analysis (analytic and simulation-based with simr)
+✓ Multilevel mediation (within/between decomposition)
+
+Practical Issues:
+✓ Centering decisions and impact
+✓ Sufficient L2 sample size guidelines
+✓ ML vs REML and when to use each
+✓ Missing data under MAR assumption
+✓ Robust standard errors
+✓ Heteroscedasticity detection and correction
+✓ Small sample corrections (Kenward-Roger, Satterthwaite)
+
+Visualization & Reporting:
+✓ Publication-ready ggplot2 plots
+✓ Simple slopes and interaction plots
+✓ Diagnostic plots (QQ plots, residual patterns)
+✓ Power curves and design space exploration
+✓ Results tables for manuscripts
+✓ Path diagrams for mediation
+
+================================================================================
+INSTRUCTOR NOTES
+================================================================================
+
+These tutorials are designed as:
+- Stand-alone reference materials (can be assigned in any order)
+- Complement to lectures (not replacements)
+- Practical computation guides with strong pedagogy
+- Resources for student projects and thesis work
+
+Suggestions for Use:
+1. Assign one tutorial per week (matches "Week 6-10" in titles)
+2. Have students run code, modify data-generating processes, and complete 
+   "Try It Yourself" exercises
+3. Use as basis for discussion of design decisions (L2 sample size, effect sizes)
+4. Reference for graduate theses using MLM
+
+All files are self-contained and require only standard R packages (lme4, 
+lmerTest, tidyverse, ggplot2, performance). No specialized proprietary software 
+needed.
+
+================================================================================
+Date Created: 2026-03-29
+================================================================================

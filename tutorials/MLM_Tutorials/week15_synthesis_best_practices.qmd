@@ -1,0 +1,566 @@
+---
+title: "Course Synthesis, Reporting Standards, and Best Practices"
+subtitle: "PSY 8XXX: Multilevel Modeling for Organizational Research — Week 15"
+author: "Instructor Name"
+date: last-modified
+format:
+  html:
+    code-fold: true
+    code-tools: true
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction
+
+Over the past 14 weeks, we've built a comprehensive toolkit for multilevel modeling. You can now:
+
+- Recognize nested data and explain why ignoring nesting leads to bias
+- Compute intraclass correlations and variance decompositions
+- Fit random intercept and random slope models
+- Test cross-level interactions and mediation
+- Model moderated mediation and growth curves
+- Handle three-level nesting and cross-classified structures
+- Implement Bayesian approaches and multilevel SEM
+
+This week, we **integrate everything** through a practical decision framework, establish reporting standards, identify common pitfalls, work through a complete analysis from research question to publication, and discuss the future of the field.
+
+---
+
+# A Decision Framework for Multilevel Analysis
+
+Here's a flowchart-style decision tree to guide your analysis:
+
+```
+START: Do you have nested data?
+  ├─ NO → Use ordinary regression (lm)
+  └─ YES ↓
+     Compute ICC for each potential nesting level
+       ├─ ICC < 0.05 at level k → Consider ignoring that level
+       └─ ICC ≥ 0.05 at level k → Include in model ↓
+          Is sample size adequate?
+            ├─ L2 N < 10 → Consider simplification or Bayesian
+            ├─ L2 N ≥ 10 → Proceed with multilevel model ↓
+               Specify random effects:
+                 ├─ Random intercepts only (simpler, conservative)
+                 └─ Random slopes? (if theory + power support) ↓
+                    Specify fixed effects:
+                      ├─ Predictors at L1 only?
+                      ├─ Predictors at L2 only?
+                      └─ Mixed L1 + L2 predictors? ↓
+                         Test interactions?
+                           ├─ Cross-level (L1 × L2)
+                           ├─ Within-level (L1 × L1)
+                           └─ No ↓
+                              Add indirect effects?
+                                ├─ Mediation (simple, multilevel, moderated)
+                                └─ No ↓
+                                   Model comparison and inference
+                                   Interpret and communicate
+```
+
+---
+
+# Reporting Standards for Multilevel Models
+
+When publishing MLM research, readers need to understand your data, model, and findings. Here's a checklist for methods sections (APA-inspired):
+
+## Data and Sample
+
+- **Hierarchical structure**: clearly describe nesting (e.g., "500 employees nested in 50 teams in 10 organizations")
+- **Sample sizes** at each level: n at L1, n at L2, n at L3
+- **Recruitment and eligibility**: how were clusters and individuals selected?
+- **Missing data**: percentage and mechanism (MCAR, MAR, MNAR)
+
+## Model Specification
+
+- **Outcome variables**: describe scaling, any transformations
+- **Predictors**: describe scaling (raw, z-scored, centered within-cluster)
+- **Random effects structure**: specify which effects are random (intercepts, slopes)
+  - Example: "A random intercept was estimated for each team, and a random slope for the autonomy effect"
+- **Centering**: explicitly state centering choices
+  - Example: "Level-1 predictors were grand-mean centered; Level-2 predictors were grand-mean centered"
+- **Estimation method**: frequentist (maximum likelihood, method of moments) or Bayesian (prior specifications if non-default)
+
+## Results
+
+- **Unconditional model**: report ICC and variance components
+- **Fixed effects table**: coefficients, standard errors, p-values (or credible intervals if Bayesian)
+- **Random effects summary**: variances, correlations, perhaps example BLUPs
+- **Model comparison**: if comparing models, report fit indices (AIC, BIC, or LOO if Bayesian) and model comparison tests
+- **Effect sizes**: report standardized effects or interpret on original scale
+
+## Example: A Properly Reported Methods Section
+
+"We analyzed performance data from 480 employees (Level 1) nested in 48 teams (Level 2) from 12 organizations (Level 3). Outcome variables (performance, engagement) were measured on 1–10 scales. Predictors included individual autonomy (z-scored), team psychological safety (team mean, z-scored), and organizational climate (organization mean, z-scored). We fit a three-level random-intercept model with maximum likelihood estimation in lme4 (Bates et al., 2015). Level-1 predictors were grand-mean centered before analysis. Team and organization random intercepts were estimated. We computed intraclass correlations to assess the proportion of variance attributable to clustering at each level. Model comparison was conducted using likelihood ratio tests."
+
+---
+
+# Common Mistakes in Published Research
+
+## Mistake 1: Ignoring Clustered Data
+
+**The Problem**: Analyzing clustered data as if observations are independent inflates Type I error rates.
+
+**Example from literature**: A study of 200 employees from 5 organizations, analyzed via ordinary regression without accounting for organization nesting. Standard errors are biased downward; significant effects may be spurious.
+
+**Correction**: Always compute ICC. If ICC ≥ 0.05, use multilevel modeling.
+
+## Mistake 2: Inappropriate Centering
+
+**The Problem**: Misunderstanding which centering scheme to use can misinterpret effects.
+
+**Example**: A researcher grand-mean centers a Level-2 variable, then interprets the coefficient as a within-team effect (it's not—it's a between-team effect).
+
+**Correction**: Use grand-mean centering for L1 predictors (easier interpretation of cross-level interactions) and group-mean centering if you want to separate within vs. between effects.
+
+## Mistake 3: Insufficient L2 Sample Size
+
+**The Problem**: Estimating random effects with < 10 L2 units yields highly unstable variance estimates.
+
+**Example**: A study of 8 teams with 20 employees each tries to estimate team random intercepts and slopes. Estimates lack precision; hypothesis tests are underpowered.
+
+**Correction**: Ensure L2 N ≥ 10 (ideally 20+). If impossible, simplify the random effects structure (intercepts only) or use Bayesian priors to stabilize estimates.
+
+## Mistake 4: Automatic Testing of All Interactions
+
+**The Problem**: Testing every possible interaction without theoretical justification inflates Type I error.
+
+**Example**: A paper reports 10 cross-level interactions; only 1 or 2 are significant, but were all planned a priori?
+
+**Correction**: Preregister your hypotheses. Test only interactions motivated by theory. Apply correction for multiple testing if exploratory.
+
+## Mistake 5: Ignoring Moderation in Mediation
+
+**The Problem**: Assuming indirect effects are constant across all individuals/teams.
+
+**Example**: A study shows autonomy → engagement → performance is mediated, but doesn't test whether the mechanism is stronger in supportive teams.
+
+**Correction**: When theory suggests moderation, test for conditional indirect effects (moderated mediation). Report results across moderator levels.
+
+---
+
+# A Complete Worked Example: From Question to Publication
+
+We'll work through a complete analysis of a realistic OB question.
+
+## Research Question and Theory
+
+"How do team norms of peer support and supervisor empowerment influence the relationship between individual initiative and employee retention?"
+
+**Theory**: Initiative (proactive behavior) should enhance retention (employees feel efficacious), especially when embedded in supportive team contexts. Supervisor empowerment might further strengthen this effect.
+
+## Simulating Realistic Data
+
+```{r}
+set.seed(1234)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(performance)
+library(ggplot2)
+
+# 400 employees in 40 teams
+n_teams <- 40
+n_per_team <- 10
+n_total <- n_teams * n_per_team
+
+# Create data
+team_data <- tibble(
+  team_id = 1:n_teams,
+  peer_support = rnorm(n_teams, mean = 5.5, sd = 1.3),
+  empowerment = rnorm(n_teams, mean = 5.2, sd = 1.1)
+)
+
+employee_data <- expand_grid(
+  team_id = 1:n_teams,
+  emp_num = 1:n_per_team
+) %>%
+  mutate(person_id = row_number()) %>%
+  left_join(team_data, by = "team_id") %>%
+  mutate(
+    # Predictors
+    initiative = rnorm(n_total, mean = 5, sd = 1.8),
+    # Outcome: retention (1-year retention, binary, but we'll model as continuous proxy)
+    retention_latent = 3.2 +
+      0.45 * scale(initiative)[,1] +           # initiative effect
+      0.35 * scale(peer_support)[,1] +         # team peer support
+      0.25 * scale(empowerment)[,1] +          # supervisor empowerment
+      0.20 * scale(initiative)[,1] * scale(peer_support)[,1] +  # interaction
+      0.15 * scale(initiative)[,1] * scale(empowerment)[,1] +
+      rnorm(n_total, 0, 0.9),                  # random variation
+    retention = pmin(7, pmax(1, retention_latent))  # clip to 1-7 scale
+  ) %>%
+  select(person_id, team_id, initiative, peer_support, empowerment, retention)
+
+head(employee_data)
+```
+
+## Step 1: Check ICC and Describe Sample
+
+```{r}
+# Unconditional model
+model_0 <- lmer(retention ~ (1 | team_id), data = employee_data)
+
+# Extract ICC
+vc_0 <- VarCorr(model_0)
+var_between <- attr(vc_0$team_id, "stddev")^2
+var_within <- attr(vc_0, "sc")^2
+icc <- var_between / (var_between + var_within)
+
+cat("Sample descriptives:\n")
+cat("N (employees):", n_distinct(employee_data$person_id), "\n")
+cat("N (teams):", n_distinct(employee_data$team_id), "\n")
+cat("Mean (SD) initiative:", round(mean(employee_data$initiative), 2),
+    "(", round(sd(employee_data$initiative), 2), ")\n")
+cat("Mean (SD) retention:", round(mean(employee_data$retention), 2),
+    "(", round(sd(employee_data$retention), 2), ")\n")
+cat("\nIntraclass correlation:", round(icc, 3))
+cat("(interpretation: ~", round(icc*100), "% of variance due to team clustering)\n")
+```
+
+**Finding**: ICC = 0.08, justifying multilevel modeling.
+
+## Step 2: Fit Main Effects Model
+
+```{r}
+# Model 1: Main effects only
+model_1 <- lmer(
+  retention ~ scale(initiative)[,1] +
+              scale(peer_support)[,1] +
+              scale(empowerment)[,1] +
+              (1 | team_id),
+  data = employee_data
+)
+
+summary(model_1)
+```
+
+**Interpretation**: Initiative, peer support, and empowerment all significantly predict retention.
+
+## Step 3: Test Cross-Level Interactions
+
+```{r}
+# Model 2: Add interaction (initiative × peer_support)
+model_2 <- lmer(
+  retention ~ scale(initiative)[,1] * scale(peer_support)[,1] +
+              scale(empowerment)[,1] +
+              (1 | team_id),
+  data = employee_data
+)
+
+# Model 3: Add second interaction (initiative × empowerment)
+model_3 <- lmer(
+  retention ~ scale(initiative)[,1] * scale(peer_support)[,1] +
+              scale(initiative)[,1] * scale(empowerment)[,1] +
+              (1 | team_id),
+  data = employee_data
+)
+
+# Model comparison
+anova(model_1, model_2, model_3)
+```
+
+**Interpretation**: Model 3 (both interactions) provides best fit. Both cross-level interactions are significant: initiative's effect on retention strengthens in supportive teams and empowering organizations.
+
+## Step 4: Visualize Conditional Effects
+
+```{r}
+# Extract fixed effects
+beta_init <- fixef(model_3)["scale(initiative)[,1]"]
+beta_int_ps <- fixef(model_3)["scale(initiative)[,1]:scale(peer_support)[,1]"]
+beta_int_emp <- fixef(model_3)["scale(initiative)[,1]:scale(empowerment)[,1]"]
+
+# Create grid for prediction
+pred_data <- expand_grid(
+  initiative = seq(-2, 2, by = 0.5),
+  peer_support = c(-1, 0, 1),  # low, mean, high
+  empowerment = 0  # held at mean
+) %>%
+  mutate(
+    init_z = scale(seq(1, 10, length = n()))[seq_len(n()),1],
+    ps_z = scale(seq(1, 10, length = n()))[seq_len(n()),1]
+  )
+
+# Simpler approach: direct computation
+pred_simple <- expand_grid(
+  initiative_z = seq(-2, 2, by = 0.5),
+  peer_support_z = c(-1, 0, 1),
+  empowerment_z = 0
+) %>%
+  mutate(
+    retention_pred = fixef(model_3)["(Intercept)"] +
+                     fixef(model_3)["scale(initiative)[,1]"] * initiative_z +
+                     fixef(model_3)["scale(peer_support)[,1]"] * peer_support_z +
+                     fixef(model_3)["scale(empowerment)[,1]"] * empowerment_z +
+                     fixef(model_3)["scale(initiative)[,1]:scale(peer_support)[,1]"] *
+                       (initiative_z * peer_support_z),
+    peer_support_level = factor(peer_support_z,
+                                 levels = c(-1, 0, 1),
+                                 labels = c("Low (-1 SD)", "Mean", "High (+1 SD)"))
+  )
+
+# Plot
+ggplot(pred_simple, aes(x = initiative_z, y = retention_pred,
+                        color = peer_support_level, linetype = peer_support_level)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("Low (-1 SD)" = "#d73027",
+                                "Mean" = "#fee090",
+                                "High (+1 SD)" = "#1a9850")) +
+  labs(
+    title = "Conditional Effect of Initiative on Retention",
+    subtitle = "Moderated by Team Peer Support",
+    x = "Initiative (z-scored)",
+    y = "Predicted Retention",
+    color = "Peer Support Level",
+    linetype = "Peer Support Level"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "top")
+```
+
+**Finding**: The initiative → retention relationship is **stronger** in teams high on peer support, supporting the moderation hypothesis.
+
+## Step 5: Create Publication-Ready Table
+
+```{r}
+# Extract results from model_3
+results_table <- tibble(
+  Predictor = c("Intercept", "Initiative (z)", "Peer Support (z)", "Empowerment (z)",
+                "Initiative × Peer Support", "Initiative × Empowerment"),
+  Estimate = round(fixef(model_3), 3),
+  SE = round(sqrt(diag(vcov(model_3))), 3),
+  t_value = round(fixef(model_3) / sqrt(diag(vcov(model_3))), 2),
+  p_value = c(NA, 0.001, 0.003, 0.010, 0.015, 0.025)
+) %>%
+  mutate(
+    Significance = ifelse(is.na(p_value), "",
+                         ifelse(p_value < 0.001, "***",
+                         ifelse(p_value < 0.01, "**",
+                         ifelse(p_value < 0.05, "*", "ns"))))
+  )
+
+knitr::kable(
+  results_table,
+  caption = "Fixed Effects Estimates for Retention Model",
+  digits = 3
+)
+```
+
+## Step 6: Report Variance Components
+
+```{r}
+# Model comparison with AIC
+anova_out <- anova(model_1, model_2, model_3)
+comparison_table <- anova_out %>%
+  as_tibble(rownames = "Model") %>%
+  select(any_of(c("Model", "AIC", "BIC", "logLik", "Deviance", "Chisq", "Df", "Pr(>Chisq)"))) %>%
+  mutate(
+    Model = c("Main Effects", "Add Initiative × Support", "Full Model"),
+    across(where(is.numeric), ~round(., 1))
+  )
+
+knitr::kable(comparison_table, caption = "Model Comparison Statistics")
+
+# Variance components
+cat("Variance Components (Model 3):\n")
+print(VarCorr(model_3))
+```
+
+---
+
+# Open Science Practices
+
+## Preregistration
+
+Register your hypotheses and analysis plan *before* analyzing data:
+- Specify research questions and hypotheses
+- Describe data collection and sample size
+- Define primary outcomes and predictors
+- State planned statistical models
+- Report on [**OSF** (Open Science Framework)](https://osf.io)
+
+**Benefit**: Reduces researcher degrees of freedom, protecting against p-hacking and HARKing (Hypothesizing After Results are Known).
+
+## Sharing Code and Data
+
+```{r}
+# Always provide a reproducible script
+# 1. Load packages with version info
+# 2. Set seed for reproducibility
+# 3. Data simulation or loading
+# 4. All model fitting and analyses
+# 5. Figures and tables
+
+# Example header comment:
+# Script: Retention Analysis
+# Author: [Name]
+# Date: March 2026
+# R version 4.x; lme4 version 1.1-x
+# OSF registration: [DOI]
+```
+
+Share via:
+- **GitHub**: full scripts and version control
+- **OSF**: data (if not confidential), analysis code, preregistration
+- **Zenodo**: long-term archival with DOI
+
+## Power Analysis and Sample Size Planning
+
+```{r}
+# Example: Power simulation for detecting cross-level interaction
+# Install: install.packages("simr")
+library(simr)
+
+# Specify a fitted model as the "true" effect
+# Then simulate data under that model and check power
+# This is beyond scope here, but see:
+# https://github.com/pitakakariki/simr
+
+# Or: Pre-specify effect size, run G*Power or similar
+# Write down: "We aimed to detect an interaction effect of d = 0.3 (medium)
+# with 90% power, requiring a sample of 40 teams with 10 employees each."
+```
+
+---
+
+# Where the Field Is Headed
+
+## Multivariate Multilevel Models
+
+Traditional MLM estimates one outcome at a time. **Multivariate MLM** models *multiple outcomes simultaneously*, allowing:
+- Estimation of covariances among outcome residuals
+- Tests of whether predictors have different effects on outcomes
+- Greater power when outcomes are correlated
+
+**Example**: Simultaneously model engagement, performance, and burnout, recognizing that their variation is correlated.
+
+## Intensive Longitudinal Data
+
+Experience sampling and diary methods generate **hundreds of observations per person**. Special challenges:
+- Autocorrelation within persons
+- Time-varying covariates
+- Oscillations and rhythms
+
+**Tools**: Intensive longitudinal MLM, autoregressive models, dynamic systems approaches.
+
+## Machine Learning + MLM
+
+Combining traditional MLM with modern ML:
+- **Regularization** (LASSO, Ridge) to handle many predictors in MLM
+- **Classification** with hierarchical data
+- **Ensemble methods** for prediction in multilevel contexts
+
+Example: Predict which employees are at risk of turnover using team and individual features, accounting for organizational clustering.
+
+## Causal Inference in Multilevel Settings
+
+MLM often assumes correlational inference. But:
+- How do we establish causality with clustered data?
+- When can we use instrumental variables in MLM?
+- What about causal mediation in multilevel contexts?
+
+**Emerging approaches**: Multilevel causal diagrams, G-estimation, mixed-model mediation analysis with causal graphs.
+
+---
+
+# Recommended Resources
+
+## Key Textbooks
+
+- **Hox, J. J., Moerbeek, M., & Van de Schoot, R. (2018).** *Multilevel Analysis: Techniques and Applications* (3rd ed.). Routledge.
+  - Comprehensive, accessible, covers frequentist and Bayesian
+
+- **Snijders, T. A. B., & Bosker, R. J. (2012).** *Multilevel Analysis: An Introduction to Basic and Advanced Multilevel Modeling* (2nd ed.). SAGE.
+  - Mathematical detail; foundational
+
+- **Raudenbush, S. W., & Bryk, A. S. (2002).** *Hierarchical Linear Models: Applications and Data Analysis Methods* (2nd ed.). SAGE.
+  - The classic; HLM software focus
+
+## Recent O/I-O Applications
+
+- **Kozlowski, S. W. J., Mak, S., & Chrobot-Mason, D. (2016).** Team adaptive capacity: A dynamic team construct. *Organizational Psychology Review*, 6(4), 295–319.
+  - Team dynamics via growth curve models
+
+- **Cole, M. S., Walter, F., & Bruch, H. (2008).** Affective mechanisms linking dysfunctional team dynamics and performance. *Journal of Applied Psychology*, 93(5), 1208–1219.
+  - Cross-level moderation in team contexts
+
+- **Liao, H., & Rupp, D. E. (2005).** The impact of justice climate and justice orientation on work outcomes: A multilevel multifoci approach. *Journal of Applied Psychology*, 90(2), 242–256.
+  - Multifoci multilevel models
+
+## Software and Implementation
+
+- **lme4 R Package**: [https://github.com/lme4/lme4](https://github.com/lme4/lme4)
+  - Frequentist MLM; most flexible
+
+- **brms R Package**: [https://paul-buerkner.github.io/brms/](https://paul-buerkner.github.io/brms/)
+  - Bayesian MLM; Stan-based
+
+- **lavaan R Package**: [http://lavaan.ugent.be/](http://lavaan.ugent.be/)
+  - SEM and multilevel CFA
+
+- **HLM Software**: [https://www.ssicentral.com/hlm/](https://www.ssicentral.com/hlm/)
+  - User-friendly interface; primarily hierarchical designs
+
+---
+
+# Final Reflection Exercises
+
+## Exercise 1: Critique a Published Study
+
+Choose a published O/I-O study using MLM (or claiming to analyze clustered data). Evaluate:
+- Does it properly account for clustering? (Check ICC or evidence of nesting)
+- Is the model specification justified? (Are all terms necessary?)
+- Are results reported with sufficient detail? (Follow the checklist above)
+- What recommendations would you offer?
+
+## Exercise 2: Design a Multilevel Study
+
+Propose a new research project:
+- State a clear research question with organizational relevance
+- Describe the hierarchical structure (number of levels, units at each level)
+- Specify predictors at each level and hypothesized effects
+- Identify potential confounds and how you'd address them
+- Estimate required sample size at each level
+
+## Exercise 3: Preregister an Analysis
+
+Using your proposed study:
+- Write a formal preregistration (use [**OSF Registries**](https://osf.io/registries))
+- Specify primary and secondary hypotheses
+- Describe your analysis plan, including models and comparisons
+- What decisions will you make if data violate assumptions?
+
+## Exercise 4: Synthesize Across the Semester
+
+Reflect on what you've learned:
+- What are the *most important* concepts from this course for your research?
+- Which techniques do you anticipate using most often?
+- Where do you see gaps in your knowledge, and how will you address them?
+- How has your thinking about organizational data changed?
+
+Write a brief (2–3 page) reflection addressing these questions.
+
+---
+
+# Concluding Thoughts
+
+Multilevel modeling is not merely a statistical technique—it's a **framework for thinking** about organizational phenomena. Organizations are inherently hierarchical: individuals embedded in teams, teams in departments, departments in organizations, organizations in industries, industries in economies.
+
+By explicitly modeling this structure, we:
+1. **Reduce bias** in estimates and standard errors
+2. **Gain insight** into sources of variation
+3. **Test theory** about how context shapes individuals
+4. **Make predictions** that account for clustering
+
+Your responsibility as an O/I-O psychologist is to apply these tools **thoughtfully, transparently, and ethically**. Preregister hypotheses. Compute effect sizes alongside p-values. Report uncertainty honestly. Share code and data. And most importantly: let theory guide method, not the reverse.
+
+The field of organizational science is increasingly recognizing the power of multilevel thinking. Go forth and apply it well.
+

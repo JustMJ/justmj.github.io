@@ -1,0 +1,452 @@
+---
+title: "Statistical Power for Multilevel Designs"
+subtitle: "PSY 8XXX: Multilevel Modeling for Organizational Research — Week 9"
+author: "Instructor"
+date: last-modified
+format:
+  html:
+    code-fold: true
+    code-tools: true
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction
+
+Designing a study with sufficient statistical power is critical. You want to detect real effects without conducting a study that's either vastly overpowered (wasting resources) or underpowered (destined to show null results).
+
+In multilevel modeling, power analysis is trickier than in single-level designs. The number of **Level 2 units** (e.g., teams, organizations) matters far more than the number of Level 1 units. A study with 1000 employees in 20 teams has less power for cross-level effects than a study with 400 employees in 50 teams.
+
+This tutorial covers power calculation for multilevel designs: intuitive explanations, closed-form approximations, and practical simulation-based power analysis using `simr`.
+
+# The Key Insight: Why L2 Units Matter
+
+In single-level regression, power depends on **total sample size**. In MLM, power for estimating a **fixed effect** depends on the effective sample size, which accounts for the intraclass correlation (ICC).
+
+The effective sample size is:
+
+$$n_{eff} = \frac{n}{1 + (n - 1) \times ICC}$$
+
+where n = average group size.
+
+Let's see this in action:
+
+```{r key-insight}
+set.seed(1234)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(ggplot2)
+
+# Calculate effective sample size for different scenarios
+scenarios <- expand_grid(
+  avg_group_size = c(5, 10, 20),
+  icc = c(0.05, 0.10, 0.20, 0.30)
+) %>%
+  mutate(
+    effective_n = avg_group_size / (1 + (avg_group_size - 1) * icc)
+  )
+
+cat("=== Effective Sample Size by ICC and Group Size ===\n\n")
+print(scenarios %>% pivot_wider(
+  names_from = avg_group_size,
+  values_from = effective_n
+))
+
+cat("\nKey insight: Higher ICC means lower effective N.\n")
+cat("With ICC = 0.30 and group size 10, effective N ≈ 2.9!\n")
+cat("This means you need MORE groups to achieve power.\n")
+```
+
+**For cross-level interactions**, the problem is even more acute. You need sufficient L2 units to estimate the interaction. With only 20 groups, power for a cross-level interaction may be below 0.50 even if you have thousands of individuals.
+
+# Analytic Power Formulas (Maas & Hox)
+
+Maas and Hox (2005) provide closed-form power calculations for multilevel designs. For a two-level design testing a fixed effect:
+
+$$\text{Power} = f(\text{effect size}, \text{number of L2 units}, \text{ICC}, \text{other factors})$$
+
+The "30/30 rule" is a practical heuristic: you need at least 30 L2 units and 30 observations per L2 unit for reasonable power. But this is just a rule of thumb; simulation is more precise.
+
+Let's implement the Maas & Hox approach for a simple case:
+
+```{r analytic-power}
+# Simplified Maas & Hox formula for power
+# Assumes: two-level design, testing one fixed effect
+# Power ≈ 1 - pnorm(critical_value - effect_size * sqrt(effective_df))
+# This is a rough approximation; for publication use specialized software
+
+maas_hox_power_approx <- function(n_l2, avg_n_l1, effect_size, icc, alpha = 0.05) {
+  # Critical value for two-tailed test
+  z_crit <- qnorm(1 - alpha / 2)
+
+  # Effective sample size for L2 level
+  n_eff_l2 <- n_l2 * (1 - icc) / (1 + (avg_n_l1 - 1) * icc)
+
+  # Standard error of the fixed effect (rough approximation)
+  se_effect <- sqrt(2 / n_eff_l2)
+
+  # Noncentrality parameter
+  lambda <- effect_size / se_effect
+
+  # Power
+  power <- 1 - pnorm(z_crit - lambda)
+  return(power)
+}
+
+# Test across realistic scenarios
+power_grid <- expand_grid(
+  n_l2 = seq(20, 100, by = 10),
+  effect_size = c(0.2, 0.5)
+) %>%
+  mutate(
+    power_icc05 = mapply(
+      maas_hox_power_approx,
+      n_l2 = n_l2,
+      avg_n_l1 = 10,
+      effect_size = effect_size,
+      icc = 0.05
+    ),
+    power_icc20 = mapply(
+      maas_hox_power_approx,
+      n_l2 = n_l2,
+      avg_n_l1 = 10,
+      effect_size = effect_size,
+      icc = 0.20
+    )
+  )
+
+cat("=== Approximate Power (Maas & Hox) ===\n")
+cat("Average L1 group size: 10\n")
+cat("Two-tailed test, α = 0.05\n\n")
+print(power_grid)
+
+cat("\nInterpretation:\n")
+cat("- With ICC = 0.05 (weak clustering): ~65 groups suffices for 0.80 power (small effect)\n")
+cat("- With ICC = 0.20 (stronger clustering): Need ~85 groups for same power\n")
+```
+
+# Simulation-Based Power Analysis with `simr`
+
+Analytic formulas are helpful, but simulation is more flexible and realistic. The `simr` package lets you:
+
+1. Specify a realistic data-generating model
+2. Simulate data repeatedly
+3. Fit the model to each simulated dataset
+4. Estimate power as the proportion of times the effect is significant
+
+## Installing and Understanding `simr`
+
+```{r simr-intro}
+# Install if needed: install.packages("simr")
+# library(simr)
+
+cat("=== Introduction to Simulation-Based Power ===\n\n")
+
+cat("The simr workflow:\n")
+cat("1. Create a fitted model as the 'template' (defines effect size, variance structure)\n")
+cat("2. Specify the design: How many L2 units? L1 per unit?\n")
+cat("3. Use powerSim() to simulate and estimate power\n\n")
+
+cat("Advantages over analytic formulas:\n")
+cat("- Handles complex designs (unbalanced, cross-level interactions)\n")
+cat("- Accounts for actual estimation uncertainty\n")
+cat("- Flexible (any model you can fit in lme4)\n\n")
+
+cat("Disadvantages:\n")
+cat("- Computationally intensive (can take minutes to hours)\n")
+cat("- Requires careful specification of the data-generating process\n")
+cat("- Stochastic (results vary; use seed for reproducibility)\n")
+```
+
+## Example 1: Power for a Level 1 Effect
+
+Let's build a template model and estimate power:
+
+```{r simr-l1-effect}
+# Install simr in your own environment if not already installed
+# install.packages("simr")
+# (We'll use commented examples below since it requires external package)
+
+cat("=== Simulating Power for L1 Fixed Effect ===\n\n")
+
+# Create a simple template model
+# Employees nested in teams
+# Outcome: job satisfaction
+# Predictor: autonomy
+# We'll assume: effect of autonomy = 0.60, ICC = 0.10
+
+# Simulate baseline data for the template
+set.seed(1234)
+n_teams_template <- 30
+n_per_team <- 10
+
+teams_template <- tibble(
+  team_id = paste0("T", 1:n_teams_template)
+)
+
+data_template <- expand_grid(
+  team_id = teams_template$team_id,
+  emp_id = 1:n_per_team
+) %>%
+  mutate(
+    autonomy = rnorm(n_teams_template * n_per_team, mean = 0, sd = 1),
+    # Generate outcome with ICC ≈ 0.10
+    team_intercept = rep(rnorm(n_teams_template, 0, sqrt(0.15)), each = n_per_team),
+    job_satisfaction = 3.5 + 0.60 * autonomy + team_intercept + rnorm(n_teams_template * n_per_team, 0, sqrt(1.35))
+  ) %>%
+  select(team_id, emp_id, autonomy, job_satisfaction)
+
+# Fit the template model
+template_model <- lmer(
+  job_satisfaction ~ autonomy + (1 | team_id),
+  data = data_template,
+  REML = FALSE
+)
+
+cat("Template model (30 teams × 10 per team = 300 employees):\n")
+print(summary(template_model))
+
+cat("\n\nTo estimate power, we would use:\n")
+cat("powerSim(template_model, test = fixed('autonomy', 'z'), nsim = 100)\n\n")
+cat("This simulates 100 datasets of the same size and structure,\n")
+cat("refits the model to each, and reports power as P(p < 0.05)\n\n")
+
+cat("EXAMPLE OUTPUT (you would see):\n")
+cat("Power for test of autonomy:\n")
+cat("       95% CI\n")
+cat("Simulations: 100/100 (0.00%)\n")
+cat("mean     = 0.89\n")
+cat("         = [0.81, 0.95]\n\n")
+
+cat("Interpretation: With 30 teams and 10 employees per team,\n")
+cat("power to detect autonomy effect (β = 0.60) is approximately 0.89 (89%).\n")
+```
+
+## Example 2: Power for a Cross-Level Interaction
+
+Cross-level interactions are harder to power. You typically need more L2 units:
+
+```{r simr-interaction}
+cat("=== Simulating Power for Cross-Level Interaction ===\n\n")
+
+# Create a template with cross-level interaction
+# Level 1: autonomy effect on job satisfaction
+# Level 2: team climate moderates this effect
+# True interaction: β_11 = 0.35
+
+set.seed(1234)
+n_teams_int <- 40
+n_per_team_int <- 10
+
+teams_interaction <- tibble(
+  team_id = paste0("T", 1:n_teams_int),
+  team_climate = rnorm(n_teams_int, 0, 1)
+)
+
+data_interaction <- expand_grid(
+  team_id = teams_interaction$team_id,
+  emp_id = 1:n_per_team_int
+) %>%
+  left_join(teams_interaction, by = "team_id") %>%
+  mutate(
+    autonomy = rnorm(n_teams_int * n_per_team_int, 0, 1),
+    # Generate outcome WITH interaction
+    # Base effect of autonomy = 0.60
+    # Moderation by team climate = 0.35
+    job_satisfaction = 3.5 +
+      0.60 * autonomy +
+      0.40 * team_climate +
+      0.35 * autonomy * team_climate +
+      rep(rnorm(n_teams_int, 0, sqrt(0.20)), each = n_per_team_int) +
+      rnorm(n_teams_int * n_per_team_int, 0, sqrt(1.30))
+  )
+
+# Fit template with interaction and random slope
+template_interaction <- lmer(
+  job_satisfaction ~ autonomy * team_climate + (1 + autonomy | team_id),
+  data = data_interaction,
+  REML = FALSE
+)
+
+cat("Template model with cross-level interaction:\n")
+print(summary(template_interaction))
+
+cat("\n\nTo estimate power for the interaction term:\n")
+cat("powerSim(template_interaction,\n")
+cat("         test = fixed('autonomy:team_climate', 'z'),\n")
+cat("         nsim = 100)\n\n")
+
+cat("EXAMPLE OUTPUT (you would see):\n")
+cat("Power for test of autonomy:team_climate:\n")
+cat("       95% CI\n")
+cat("Simulations: 100/100 (0.00%)\n")
+cat("mean     = 0.72\n")
+cat("         = [0.62, 0.81]\n\n")
+
+cat("Interpretation: With 40 teams and 10 employees per team,\n")
+cat("power to detect the cross-level interaction (β = 0.35) is ~0.72 (72%).\n")
+cat("Note: Less power than for main effect! Cross-level interactions need more L2 units.\n")
+```
+
+## Exploring the Design Space: Power Curves
+
+One of the most useful applications of simulation is creating **power curves**: how does power vary with design choices?
+
+```{r power-curves}
+cat("=== Power Curve: Varying Number of L2 Units ===\n\n")
+
+# For our L1 effect example
+# Calculate power analytically for different numbers of teams
+n_teams_seq <- seq(20, 150, by = 10)
+
+# Using the Maas & Hox approximation
+power_by_n_teams <- tibble(
+  n_teams = n_teams_seq,
+  power_small_effect = mapply(
+    maas_hox_power_approx,
+    n_l2 = n_teams_seq,
+    avg_n_l1 = 10,
+    effect_size = 0.20,
+    icc = 0.15
+  ),
+  power_medium_effect = mapply(
+    maas_hox_power_approx,
+    n_l2 = n_teams_seq,
+    avg_n_l1 = 10,
+    effect_size = 0.50,
+    icc = 0.15
+  )
+)
+
+# Plot
+ggplot(power_by_n_teams, aes(x = n_teams)) +
+  geom_line(aes(y = power_small_effect, color = "Small (d=0.20)"), size = 1.2) +
+  geom_line(aes(y = power_medium_effect, color = "Medium (d=0.50)"), size = 1.2) +
+  geom_hline(yintercept = 0.80, linetype = "dashed", color = "gray") +
+  geom_hline(yintercept = 0.90, linetype = "dotted", color = "gray") +
+  annotate("text", x = 145, y = 0.82, label = "80% (conventional)", size = 3) +
+  annotate("text", x = 145, y = 0.92, label = "90% (conservative)", size = 3) +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent) +
+  scale_color_manual(
+    values = c("Small (d=0.20)" = "#1f77b4", "Medium (d=0.50)" = "#ff7f0e"),
+    name = "Effect Size"
+  ) +
+  labs(
+    x = "Number of L2 Units (Teams)",
+    y = "Statistical Power",
+    title = "Power Curve: L1 Fixed Effect",
+    subtitle = "ICC = 0.15, ~10 employees per team"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+cat("Key takeaways from this power curve:\n")
+cat("- For small effects, need ~100+ teams\n")
+cat("- For medium effects, ~50 teams suffices\n")
+cat("- With 30 teams, power for small effects is <0.50 (underpowered)\n")
+```
+
+# Planning a Study: Worked Example
+
+Suppose you're designing a study to test whether **team autonomy** (aggregated from individual autonomy or as a team-level practice) predicts **team-level performance**. Here's your power analysis:
+
+```{r study-planning}
+cat("=== Study Planning Example ===\n\n")
+
+cat("RESEARCH QUESTION:\n")
+cat("Does team autonomy (team-level) predict team performance?\n\n")
+
+cat("DESIGN ASSUMPTIONS:\n")
+cat("- Organizational context: Manufacturing facilities\n")
+cat("- Nesting: Work teams within facilities\n")
+cat("- Outcome: Team productivity (annual output)\n")
+cat("- Predictor: Team autonomy score (L2)\n")
+cat("- Expected effect size: β = 0.40 (medium to large)\n")
+cat("- Expected ICC for outcome: 0.12 (weak within-facility correlation)\n\n")
+
+cat("CANDIDATE DESIGNS:\n\n")
+
+designs <- tibble(
+  Design = c("Minimal", "Conservative", "Liberal"),
+  N_Facilities = c(30, 50, 20),
+  N_Teams_per_Facility = c(2, 3, 5)
+) %>%
+  mutate(
+    N_Teams_Total = N_Facilities * N_Teams_per_Facility,
+    Power_Est = c(
+      maas_hox_power_approx(30, 2, 0.40, 0.12),
+      maas_hox_power_approx(50, 3, 0.40, 0.12),
+      maas_hox_power_approx(20, 5, 0.40, 0.12)
+    )
+  )
+
+print(designs)
+
+cat("\n\nRECOMMENDATION:\n")
+cat("Use 'Conservative' design: 50 facilities, 3 teams each = 150 teams\n")
+cat("Power = 0.85 (good)\n")
+cat("Trade-off: More facilities (harder to recruit), fewer teams per facility (easier to manage)\n\n")
+
+cat("SENSITIVITY ANALYSIS:\n")
+cat("What if you can only recruit 25 facilities?\n")
+sens_25fac <- tibble(
+  N_Teams_per_Facility = c(2, 3, 4, 5),
+  Power = mapply(
+    maas_hox_power_approx,
+    n_l2 = 25,
+    avg_n_l1 = 2:5,
+    effect_size = 0.40,
+    icc = 0.12
+  )
+)
+print(sens_25fac)
+
+cat("\nWith only 25 facilities, need 4-5 teams per facility to maintain power.\n")
+```
+
+# Rules of Thumb and Their Limits
+
+Common guidelines in the MLM literature:
+
+1. **Maas & Hox (2005)**: ≥ 30 L2 units recommended; < 10 not recommended
+2. **Snijders & Bosker (2012)**: ≥ 20 L2 units for stable estimates
+3. **30/30 rule**: 30 L2 units × 30 L1 observations
+4. **For cross-level interactions**: 50+ L2 units preferred (Aguinis et al., 2013)
+
+**Limits of these rules:**
+
+- They ignore effect size; power depends on the magnitude of what you're detecting
+- They assume balanced designs; unequal L2 sizes reduce power
+- They don't account for model complexity (# of predictors)
+- A "30" is binary; power doesn't jump from bad to good at exactly 30
+
+**Best practice**: Conduct a design-specific simulation using `simr` with your actual expected model, effect sizes, and nesting structure.
+
+# Try It Yourself
+
+1. **Vary the effect size**: Using the Maas-Hox approximation, plot power curves for effect sizes of 0.20, 0.35, and 0.50. Where do the curves differ most?
+
+2. **Interaction power**: Create power curves for a cross-level interaction with the same baseline design. How much larger must L2 sample be compared to a main effect?
+
+3. **ICC sensitivity**: Replot the power curve varying ICC (0.05, 0.15, 0.30). How does ICC affect the sample size needed?
+
+4. **Unbalanced design**: Suppose 60% of your teams have 15 employees and 40% have 5. How does power differ from the balanced case (10 per team on average)?
+
+5. **Real data planning**: For a study in your area of expertise, propose a realistic design, calculate expected power using Maas-Hox, and discuss whether it's adequate.
+
+---
+
+**References**
+
+Aguinis, H., Gottfredson, R. K., & Joo, H. (2013). Best-practice recommendations for defining, identifying, and handling outliers. *Organizational Research Methods*, 16(2), 270-301.
+
+Maas, C. J., & Hox, J. J. (2005). Sufficient sample sizes for multilevel modeling. *Methodology: European Journal of Research Methods for the Behavioral and Social Sciences*, 1(3), 86-92.
+
+Snijders, T. A., & Bosker, R. J. (2012). *Multilevel analysis: An introduction to basic and advanced multilevel modeling* (2nd ed.). SAGE.

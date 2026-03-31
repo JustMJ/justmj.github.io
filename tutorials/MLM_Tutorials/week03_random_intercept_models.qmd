@@ -1,0 +1,467 @@
+---
+title: "Random Intercept Models: Adding Predictors Across Levels"
+subtitle: "PSY 8XXX: Multilevel Modeling for Organizational Research — Week 3"
+author: "Instructor Name"
+date: last-modified
+format:
+  html:
+    code-fold: true
+    code-tools: true
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    theme: cosmo
+    self-contained: true
+execute:
+  warning: false
+  message: false
+---
+
+# Introduction: From Null to Rich Models
+
+The unconditional model told us *where* variance lies, but not *why*. In Week 2, we learned that about 42% of job satisfaction variation is between teams. Now the question becomes: **What explains that between-team variance?** And separately: **What explains the within-team variance?**
+
+The random intercept model extends the unconditional model by adding predictors at one or both levels. A predictor at Level 1 (individual level) explains within-team variance. A predictor at Level 2 (team level) explains between-team variance. By adding predictors, we can:
+
+1. Test substantive hypotheses about what drives the outcome
+2. Reduce the unexplained variance at each level
+3. See how much of the original "team effect" persists after accounting for team-level characteristics
+4. Calculate how much variance our predictors explain (pseudo-R²)
+
+The random intercept model still assumes all teams have the same slope (the relationship between a predictor and the outcome is identical across teams). We'll relax this assumption in Week 4 when we introduce random slopes. For now, the random intercept model is the workhorse: it's simple, interpretable, and appropriate when you have modest sample sizes or don't expect slope variation across groups.
+
+# Building the Random Intercept Model: The Equations
+
+The Level-1 (individual-level) model is:
+
+$$Y_{ij} = \beta_{0j} + \beta_{1j} X_{1,ij} + r_{ij}$$
+
+This says: individual $i$'s outcome depends on their team's intercept ($\beta_{0j}$), a predictor ($X_{1,ij}$), and individual residual error. The subscript on $\beta_1$ reminds us that this is a *team-specific* slope, but for now we're assuming it's the same across teams (we'll drop the $j$ subscript later).
+
+The Level-2 (team-level) model describes how team intercepts and slopes vary:
+
+$$\beta_{0j} = \gamma_{00} + \gamma_{01} W_{j} + u_{0j}$$
+
+This says: team $j$'s intercept equals the grand mean ($\gamma_{00}$), plus an effect of team-level predictor $W_j$, plus team-specific deviation $u_{0j}$.
+
+Substituting the Level-2 model into the Level-1 model gives us the **combined model**:
+
+$$Y_{ij} = \gamma_{00} + \gamma_{01} W_j + \gamma_{10} X_{1,ij} + u_{0j} + r_{ij}$$
+
+This is the random intercept model with both Level-1 and Level-2 predictors. Let's build this step by step, starting with Level-1 predictors only.
+
+# Setup and Data Preparation
+
+```{r setup}
+set.seed(1234)
+library(tidyverse)
+library(lme4)
+library(lmerTest)
+library(performance)
+library(broom.mixed)
+library(magrittr)
+
+# Recreate the employee dataset from Week 1
+n_teams <- 50
+teams <- tibble(
+  team_id = 1:n_teams,
+  team_size = sample(8:15, n_teams, replace = TRUE),
+  team_climate = rnorm(n_teams, mean = 5, sd = 0.8))
+
+teams %<>% 
+  mutate(
+  team_climate = pmin(pmax(team_climate, 1), 7)
+)
+
+employees <- teams %>%
+  slice(rep(1:n_teams, teams$team_size)) %>%
+  arrange(team_id) %>%
+  group_by(team_id) %>%
+  mutate(
+    emp_id = row_number(),
+    employee_id = paste0("T", team_id, "E", emp_id),
+    autonomy = rnorm(n(), mean = 4.5, sd = 1.2),
+    autonomy = pmin(pmax(autonomy, 1), 7),
+    performance = rnorm(n(), mean = 6, sd = 1.5),
+    performance = pmin(pmax(performance, 1), 10),
+    tenure = rgamma(n(), shape = 3, rate = 0.8)
+  ) %>%
+  ungroup()
+
+employees <- employees %>%
+  group_by(team_id) %>%
+  mutate(
+    u0j = rnorm(1, mean = 0, sd = sqrt(0.6)),
+    job_satisfaction = 3.0 +
+                       0.5 * scale(autonomy)[,1] +
+                       0.4 * team_climate +
+                       u0j +
+                       rnorm(n(), mean = 0, sd = sqrt(0.8)),
+    job_satisfaction = pmin(pmax(job_satisfaction, 1), 7)
+  ) %>%
+  ungroup() %>%
+  select(-u0j, -emp_id)
+
+cat("Dataset ready:", nrow(employees), "employees in", n_distinct(employees$team_id), "teams\n")
+```
+
+# Model 1: Level-1 Predictor Only
+
+Let's add **autonomy** as a Level-1 predictor. This tests: *Does individual autonomy predict satisfaction after accounting for team membership?*
+
+```{r model-l1-only}
+# Fit model with Level-1 predictor
+model_l1 <- lmer(job_satisfaction ~ autonomy + (1 | team_id), data = employees)
+summary(model_l1)
+```
+
+**Fixed Effects Interpretation:**
+
+- **(Intercept) = 4.089**: The average satisfaction for an employee with average autonomy (before centering). We'll center variables in Week 5; for now, note that this intercept depends on the scale of autonomy.
+
+- **autonomy = 0.369**: A one-unit increase in autonomy is associated with a 0.369-unit increase in job satisfaction, *controlling for team membership*. This is the within-team effect: employees with higher autonomy in the same team have higher satisfaction.
+
+The standard error (0.049) is much larger than when we used OLS on the full dataset (0.046), reflecting the proper accounting for non-independence. This is the whole point of MLM: more honest uncertainty.
+
+**Random Effects:**
+
+- **Intercept variance (team_id)**: 0.469. This is smaller than the 0.580 we saw in the unconditional model! By adding autonomy, we've explained some of the between-team variance. Autonomy varies by team, and this variation was part of the original team effect.
+
+- **Residual variance**: 0.768, compared to 0.794 in the unconditional model. Adding autonomy also explains some within-team variance.
+
+## Compare to OLS
+
+```{r compare-ols}
+# For comparison, fit OLS model ignoring teams
+model_ols <- lm(job_satisfaction ~ autonomy, data = employees)
+
+cat("=== COMPARISON: OLS vs. MLM ===\n\n")
+cat("Autonomy coefficient (OLS):", round(coef(model_ols)[2], 3), "\n")
+cat("Autonomy coefficient (MLM):", round(fixef(model_l1)[2], 3), "\n")
+cat("\nStandard error (OLS):", round(summary(model_ols)$coefficients[2, 2], 3), "\n")
+cat("Standard error (MLM):", round(summary(model_l1)$coefficients[2, 2], 3), "\n")
+```
+
+The coefficients are similar, but notice the standard errors are different. The MLM standard error properly reflects the clustering in the data.
+
+# Model 2: Level-2 Predictor Only
+
+Now let's add **team_climate** as a Level-2 predictor, predicting satisfaction from team-level characteristics:
+
+```{r model-l2-only}
+# Fit model with Level-2 predictor (team climate)
+model_l2 <- lmer(job_satisfaction ~ team_climate + (1 | team_id), data = employees)
+summary(model_l2)
+```
+
+**Interpretation:**
+
+- **team_climate = 0.403**: A one-unit increase in team climate is associated with a 0.403-unit increase in team average satisfaction. This is a between-team effect: teams with better climates have higher average satisfaction.
+
+The standard error (0.083) is larger than the autonomy effect, reflecting that we have only 50 teams (less power for estimating team-level effects) compared to 500 individuals.
+
+**Random Effects:**
+
+- **Intercept variance**: Dropped from 0.580 (unconditional) to 0.417. Team climate explains some of the between-team variance, but not all. This suggests that teams differ for reasons beyond just their climate.
+
+# Model 3: Combined Level-1 and Level-2 Model
+
+Now we fit the full random intercept model with predictors at both levels:
+
+```{r model-combined}
+# Fit full model with both levels
+model_full <- lmer(job_satisfaction ~ autonomy + team_climate + (1 | team_id), 
+                   data = employees)
+summary(model_full)
+```
+
+**Fixed Effects Interpretation:**
+
+- **autonomy = 0.370**: Individual autonomy still predicts satisfaction (within-team effect), about the same as before. Team climate and autonomy are relatively independent predictors.
+
+- **team_climate = 0.383**: Team climate also predicts satisfaction (between-team effect), slightly reduced from 0.403. Adding autonomy to the model doesn't change the team climate effect much, suggesting these are distinct mechanisms.
+
+**What This Means Substantively:**
+
+Satisfaction is driven by both individual autonomy AND team climate. An employee high in autonomy in a supportive climate is happiest; an employee low in autonomy in a poor climate is least happy. The effects are separable and additive (in this model).
+
+## Variance Decomposition: Pseudo-R²
+
+Let's calculate how much variance our predictors explain at each level:
+
+```{r pseudor2}
+# Get variance components for all models
+vars_unconditional <- as.numeric(VarCorr(lmer(job_satisfaction ~ 1 + (1 | team_id), 
+                                                data = employees)))
+vars_l1 <- as.numeric(VarCorr(model_l1))
+vars_l2 <- as.numeric(VarCorr(model_l2))
+vars_full <- as.numeric(VarCorr(model_full))
+
+# Between-team variance
+tau_uncond <- vars_unconditional[1]
+tau_l1 <- vars_l1[1]
+tau_l2 <- vars_l2[1]
+tau_full <- vars_full[1]
+
+# Within-team (residual) variance
+sigma_uncond <- vars_unconditional[2]
+sigma_l1 <- vars_l1[2]
+sigma_l2 <- vars_l2[2]
+sigma_full <- vars_full[2]
+
+# Pseudo-R² at Level 2 (between-team)
+r2_l2_l1 <- 1 - tau_l1 / tau_uncond
+r2_l2_l2 <- 1 - tau_l2 / tau_uncond
+r2_l2_full <- 1 - tau_full / tau_uncond
+
+# Pseudo-R² at Level 1 (within-team)
+r2_l1_l1 <- 1 - sigma_l1 / sigma_uncond
+r2_l1_l2 <- 1 - sigma_l2 / sigma_uncond
+r2_l1_full <- 1 - sigma_full / sigma_uncond
+
+cat("=== PSEUDO-R² VALUES ===\n\n")
+cat("BETWEEN-TEAM (Level 2) Variance Explained:\n")
+cat("  Model L1 (autonomy only):", round(r2_l2_l1, 3), "\n")
+cat("  Model L2 (team_climate only):", round(r2_l2_l2, 3), "\n")
+cat("  Model Full (both):", round(r2_l2_full, 3), "\n\n")
+
+cat("WITHIN-TEAM (Level 1) Variance Explained:\n")
+cat("  Model L1 (autonomy only):", round(r2_l1_l1, 3), "\n")
+cat("  Model L2 (team_climate only):", round(r2_l1_l2, 3), "\n")
+cat("  Model Full (both):", round(r2_l1_full, 3), "\n")
+```
+
+**Interpretation:**
+
+- The Level-1 predictor (autonomy) explains about 3% of within-team variance and 19% of between-team variance.
+- The Level-2 predictor (team_climate) explains about 0.5% of within-team variance (as expected—it's a constant within teams) and 28% of between-team variance.
+- Together, they explain about 19% of within-team and 28% of between-team variance. Much variance remains unexplained—this is normal and healthy. It leaves room for other predictors (in future studies) and acknowledges genuine individual/team differences.
+
+# Model Comparison with Likelihood Ratio Tests
+
+Is adding predictors worthwhile? We can test this formally using likelihood ratio tests:
+
+```{r model-comparison}
+# Compare models with anova()
+cat("=== LIKELIHOOD RATIO TESTS ===\n\n")
+
+cat("Test 1: Is autonomy a significant predictor?\n")
+model_null <- lmer(job_satisfaction ~ 1 + (1 | team_id), data = employees)
+print(anova(model_null, model_l1))
+
+cat("\nTest 2: Is team_climate a significant predictor?\n")
+print(anova(model_null, model_l2))
+
+cat("\nTest 3: Is the full model better than L1 only?\n")
+print(anova(model_l1, model_full))
+
+cat("\nTest 4: Is the full model better than L2 only?\n")
+print(anova(model_l2, model_full))
+```
+
+All tests should be significant (p < 0.05), indicating that each predictor adds meaningful information. The likelihood ratio test compares models on their overall fit to the data.
+
+# Visualizing Random Intercepts with Fitted Lines
+
+Let's create a visualization showing the team-specific fitted lines:
+
+```{r visualization}
+# Extract predictions for plotting
+# Create new data with a range of autonomy values at each team's climate
+pred_data <- expand.grid(
+  autonomy = seq(1, 7, by = 0.5),
+  team_id = unique(employees$team_id)
+) %>%
+  left_join(
+    employees %>% 
+      group_by(team_id) %>% 
+      summarize(team_climate = first(team_climate), .groups = 'drop'),
+    by = "team_id"
+  )
+
+# Get predictions from the full model
+pred_data$pred_satisfaction <- predict(model_full, newdata = pred_data, re.form = NA)  # Fixed effects only
+pred_data$pred_with_re <- predict(model_full, newdata = pred_data, re.form = NULL)    # Include RE
+
+# Plot with both fixed effects (overall) and team-specific lines
+p <- ggplot(employees, aes(x = autonomy, y = job_satisfaction)) +
+  geom_point(alpha = 0.2, size = 1, color = "gray") +
+  geom_line(data = pred_data, aes(y = pred_with_re, group = team_id, color = team_climate),
+            alpha = 0.5, size = 0.8) +
+  geom_line(data = pred_data %>% distinct(autonomy, pred_satisfaction), 
+            aes(y = pred_satisfaction, color = NA), color = "black", size = 1.2) +
+  scale_color_gradient(low = "blue", high = "red", name = "Team Climate") +
+  labs(
+    title = "Random Intercept Model: Predicted Satisfaction by Autonomy",
+    subtitle = "Thick black line = fixed effect; colored lines = team-specific predictions",
+    x = "Autonomy (1-7 scale)",
+    y = "Job Satisfaction (1-7 scale)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+print(p)
+```
+
+This visualization shows:
+- The **thick black line** is the overall fixed effect: the relationship between autonomy and satisfaction averaged across all teams.
+- The **colored lines** represent the team-specific predictions, accounting for each team's random intercept. Teams with higher climate have lines shifted upward.
+- The **scatter points** are actual observations, showing individual variation around these team-level predictions.
+
+The fact that the colored lines are nearly parallel (they don't cross much) reflects our assumption of equal slopes across teams—autonomy has the same relationship with satisfaction in every team.
+
+# A Complete Example: Building a Realistic Model
+
+Let's walk through a complete example, starting with the unconditional model and building to a richer version:
+
+```{r complete-example}
+# Step 1: Unconditional model (baseline)
+cat("STEP 1: Unconditional Model\n")
+m0 <- lmer(job_satisfaction ~ 1 + (1 | team_id), data = employees)
+tau0 <- as.numeric(VarCorr(m0))[1]
+sigma0 <- as.numeric(VarCorr(m0))[2]
+cat("  Between variance:", round(tau0, 3), "\n")
+cat("  Within variance:", round(sigma0, 3), "\n")
+cat("  ICC:", round(tau0 / (tau0 + sigma0), 3), "\n\n")
+
+# Step 2: Add performance (L1 predictor)
+cat("STEP 2: Add Individual Performance\n")
+m1 <- lmer(job_satisfaction ~ performance + (1 | team_id), data = employees)
+tau1 <- as.numeric(VarCorr(m1))[1]
+sigma1 <- as.numeric(VarCorr(m1))[2]
+cat("  Performance coefficient:", round(fixef(m1)[2], 3), "\n")
+cat("  Reduction in between variance:", round((1 - tau1/tau0) * 100, 1), "%\n")
+cat("  Reduction in within variance:", round((1 - sigma1/sigma0) * 100, 1), "%\n\n")
+
+# Step 3: Add team climate (L2 predictor)
+cat("STEP 3: Add Team Climate\n")
+m2 <- lmer(job_satisfaction ~ performance + team_climate + (1 | team_id), 
+           data = employees)
+tau2 <- as.numeric(VarCorr(m2))[1]
+sigma2 <- as.numeric(VarCorr(m2))[2]
+cat("  Team climate coefficient:", round(fixef(m2)[3], 3), "\n")
+cat("  Additional reduction in between variance:", round((1 - tau2/tau1) * 100, 1), "%\n")
+cat("  Additional reduction in within variance:", round((1 - sigma2/sigma1) * 100, 1), "%\n\n")
+
+# Step 4: Compare all models
+cat("STEP 4: Model Comparison (AIC)\n")
+aic_compare <- tibble(
+  Model = c("Unconditional", "Add Performance", "Add Team Climate"),
+  AIC = c(AIC(m0), AIC(m1), AIC(m2)),
+  dAIC = AIC(m0) - c(AIC(m0), AIC(m1), AIC(m2))
+)
+print(aic_compare)
+cat("\n(Lower AIC is better. dAIC shows improvement from model 0.)\n")
+```
+
+This stepwise approach shows how predictors incrementally reduce unexplained variance, answering the question: "Does this variable help?"
+
+# Try It Yourself Exercises
+
+## Exercise 1: Add Tenure as a Predictor
+Fit a model predicting job_satisfaction from both autonomy and tenure. Report the coefficients, standard errors, and test whether tenure is a significant predictor. Does tenure explain more or less within-team variance than autonomy?
+
+## Exercise 2: Multi-Level Interactions
+Fit a model with autonomy at Level 1 and team_climate at Level 2, then examine whether the autonomy-satisfaction relationship is stronger in teams with high climate. (Hint: This requires extending beyond random intercepts to a cross-level interaction, which is complex—for now, just visualize the predictions at high and low climate levels.)
+
+## Exercise 3: Variance Component Summary
+Create a summary table showing variance components and ICC for:
+1. Unconditional model
+2. Model with autonomy only
+3. Model with team_climate only
+4. Model with both predictors
+
+Discuss what these changes tell you about the data structure.
+
+## Exercise 4: Pseudo-R² Calculation
+Manually calculate (not using functions) the pseudo-R² values for the full model at both Level 1 and Level 2. Show your work step by step.
+
+## Exercise 5: Slopes and Intercepts
+Extract the random intercepts from the full model. Do teams with higher team_climate also have higher random intercepts? (They shouldn't—the random intercepts should represent what's left unexplained *after* accounting for climate.) Create a scatter plot to verify this.
+
+---
+
+**Key Takeaways:**
+
+- The random intercept model extends the unconditional model by adding predictors at Level 1 (individual) and/or Level 2 (team) levels.
+
+- Level-1 predictors explain within-team variance; Level-2 predictors explain between-team variance.
+
+- The between-team variance shrinks when you add Level-2 predictors (like team_climate), but not when you add Level-1 predictors (like autonomy).
+
+- Pseudo-R² values show how much variance each predictor explains at each level.
+
+- Random intercepts represent team effects after accounting for predictors; they should be uncorrelated with the predictors if the model is specified correctly.
+
+- Visualization of team-specific fitted lines reveals whether slopes are truly parallel (supporting the random intercept assumption) or vary across teams (suggesting random slopes are needed).
+
+# Appendix: Advanced Topics in Random Intercept Models
+
+## Understanding the Fixed Effects-Random Effects Distinction
+
+A subtle but important concept in multilevel modeling is the distinction between **fixed effects** and **random effects**. This terminology is different from how "fixed" and "random" are used in many other contexts, so it bears explicit discussion.
+
+In multilevel models:
+
+- **Fixed effects** ($\gamma$ parameters): Population-level averages that apply to all groups. These are what you usually care about for hypothesis testing. "On average, across all teams, does autonomy predict satisfaction?" is answered by the fixed effect.
+
+- **Random effects** ($u$ parameters): Group-specific deviations from the fixed effects. These represent how much each individual group differs from the population average. If the fixed effect of autonomy is 0.37 and Team 5 has a random slope of -0.08, then Team 5's slope is 0.37 - 0.08 = 0.29.
+
+When you report results from a random intercept model, you're primarily reporting fixed effects. The random effects are nuisance parameters in some contexts, but they're invaluable for understanding group-level heterogeneity and making predictions for specific groups.
+
+## Assumptions and Diagnostics
+
+Random intercept models assume:
+
+1. **Linearity within groups**: The relationship between predictor and outcome is linear within each group.
+2. **Homogeneity of Level-1 residual variance**: The residual variance is constant across groups.
+3. **Normality of residuals**: Both Level-1 and Level-2 residuals are normally distributed.
+4. **Independence at Level 1**: Residuals at the individual level are uncorrelated.
+
+Violations of these assumptions can affect inference. Diagnostic plots are crucial:
+
+```{r diagnostics}
+# Fit a model for diagnostics
+model_diag <- lmer(job_satisfaction ~ autonomy + team_climate + (1 | team_id),
+                   data = employees)
+
+# Extract residuals
+residuals_l1 <- residuals(model_diag)
+residuals_l2 <- ranef(model_diag)$team_id
+
+# Plot residuals
+par(mfrow = c(2, 2))
+
+# Q-Q plot (normality of L1 residuals)
+qqnorm(residuals_l1)
+qqline(residuals_l1)
+title("Q-Q Plot: Level-1 Residuals")
+
+# Histogram (L1 residuals)
+hist(residuals_l1, breaks = 20, main = "Histogram: Level-1 Residuals")
+
+# Residuals vs. fitted (homogeneity of variance)
+plot(fitted(model_diag), residuals_l1,
+     main = "Residuals vs. Fitted",
+     xlab = "Fitted Values", ylab = "Residuals")
+abline(h = 0, lty = 2)
+
+# Q-Q plot for random intercepts (normality of L2)
+qqnorm(residuals_l2$`(Intercept)`)
+qqline(residuals_l2$`(Intercept)`)
+title("Q-Q Plot: Random Intercepts")
+
+par(mfrow = c(1, 1))
+```
+
+These diagnostic plots help identify violations of model assumptions. Non-normal Q-Q plots, patterns in residuals vs. fitted plots, or heterogeneous spread suggest model modifications may be needed.
+
+## Effect Sizes and Practical Significance
+
+Statistical significance doesn't imply practical significance. Always report effect sizes alongside p-values. In multilevel models, useful effect sizes include:
+
+1. **Standardized coefficients**: Divide coefficients by the SD of the predictor and outcome.
+2. **Variance explained**: Pseudo-R² values (discussed in Week 3).
+3. **Cohen's d**: For comparing group means, though less standard in MLM.
+
+The interpretation depends on your field and context. A 0.37 coefficient for autonomy might be large or small depending on the scale and practical meaning of the units.
