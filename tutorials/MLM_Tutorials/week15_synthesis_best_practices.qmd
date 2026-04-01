@@ -1,5 +1,5 @@
 ---
-title: "Course Synthesis, Reporting Standards, and Best Practices"
+title: "Reporting Standards and Best Practices in Multilevel Modeling"
 subtitle: "PSY 8XXX: Multilevel Modeling for Organizational Research — Week 15"
 author: "Instructor Name"
 date: last-modified
